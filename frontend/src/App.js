@@ -1,63 +1,86 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageSquare, History, FileText, Zap, Mic, ThumbsUp, Send } from 'lucide-react';
+// Corrected: Re-added History and FileText for icons
+import { Mic, Send, Lightbulb, History, FileText } from 'lucide-react'; 
 
 function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('chat');
-  const [chatHistory, setChatHistory] = useState([]);
+  const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const [quickActions, setQuickActions] = useState({
+  // Corrected: Removed setQuickActions as it was unused
+  const [quickActions] = useState({ 
     tags: ['AI', 'Machine Learning', 'NLP', 'Computer Vision', 'Robotics'],
     technologies: ['PyTorch', 'TensorFlow', 'Transformers', 'BERT', 'GPT']
   });
-  
+  const [chatHistory, setChatHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(true);
+  const [showQuickActions, setShowQuickActions] = useState(true);
+
   const messagesEndRef = useRef(null);
-  
-  // Auto-scroll to bottom of messages
+
+  // Corrected: Added messages.length to the dependency array for scrolling
   useEffect(() => {
     if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' }); // block: 'end' ensures the very bottom is visible
     }
-  }, [messages]);
+  }, [messages.length]); 
 
-  // Function to add quick actions to input
+  // Initial welcome message effect
+  useEffect(() => {
+    if (messages.length === 0) {
+      setMessages([{
+        role: 'assistant',
+        content: 'Welcome to the GenAI Research Assistant! How can I help with your research today?'
+      }]);
+    }
+  }, []); // This effect runs only once on mount
+
   const handleQuickAction = (action) => {
     setInput(prev => prev + ` ${action}`);
   };
 
-  // Mock function to send message to backend
   const sendMessage = async () => {
     if (!input.trim()) return;
-    
+
     const userMessage = { role: 'user', content: input };
-    setMessages(prev => [...prev, userMessage]);
+    
+    // Add user message immediately for responsive UI
+    setMessages(prev => [...prev, userMessage]); 
     setInput('');
     setIsLoading(true);
-    
+
     try {
-      // Simulate API call with timeout
+      // Simulate API call delay
       setTimeout(() => {
-        const botResponse = { 
-          role: 'assistant', 
-          content: `This is a mock response for: "${input}".\nIn a production environment, this would be connected to a backend API that processes your query and returns relevant research information.` 
+        const botResponseContent = `This is a mock response for: "${userMessage.content}".\nIn a production environment, this would be connected to a backend API that processes your query and returns relevant research information.`;
+        const botResponse = {
+          role: 'assistant',
+          content: botResponseContent
         };
-        setMessages(prev => [...prev, botResponse]);
-        
-        // Save to history
-        const newConversation = {
-          id: Date.now(),
-          title: input.slice(0, 30) + (input.length > 30 ? '...' : ''),
-          timestamp: new Date().toISOString(),
-          messages: [...messages, userMessage, botResponse]
-        };
-        setChatHistory(prev => [newConversation, ...prev]);
-        setIsLoading(false);
+
+        // Use functional update to ensure we have the latest state including the user message
+        setMessages(prevMessages => {
+          const updatedMessages = [...prevMessages, botResponse];
+
+          // Add to chat history with the complete conversation turn
+          const newConversation = {
+            id: Date.now(),
+            title: userMessage.content.slice(0, 30) + (userMessage.content.length > 30 ? '...' : ''),
+            timestamp: new Date().toISOString(),
+            messages: updatedMessages // Store the complete conversation turn
+          };
+          setChatHistory(prevHistory => [newConversation, ...prevHistory]);
+
+          setIsLoading(false);
+          return updatedMessages; // Return the updated messages array
+        });
+
       }, 1000);
     } catch (error) {
       console.error("Error sending message:", error);
       setIsLoading(false);
+      // Optionally add an error message to the chat
     }
   };
 
@@ -68,9 +91,19 @@ function App() {
     }
   };
 
+  const generatePrompt = () => {
+    setIsGeneratingPrompt(true);
+    // Simulate prompt generation delay
+    setTimeout(() => {
+      const generatedPrompt = "Analyze the relationship between transformer architecture developments and performance improvements in natural language understanding tasks";
+      setInput(generatedPrompt);
+      setIsGeneratingPrompt(false);
+    }, 1500);
+  };
+
   const startRecording = () => {
     setIsRecording(true);
-    // In production: Implement speech recognition
+    // Simulate recording time
     setTimeout(() => {
       setIsRecording(false);
       setInput(prev => prev + " [Speech converted to text would appear here]");
@@ -79,303 +112,261 @@ function App() {
 
   const stopRecording = () => {
     setIsRecording(false);
-  };
-
-  const generateSummary = () => {
-    if (messages.length === 0) return "No conversation to summarize.";
-    
-    // In production: This would call the backend for proper summarization
-    return "This is a placeholder for the conversation summary. In production, this would be generated by the backend using AI to analyze the key points from your research conversation.";
+    // In a real app, this would stop the audio recording and process the result
+    console.log("Recording stopped (simulated).");
   };
 
   const loadConversation = (conversation) => {
     setMessages(conversation.messages);
-    setActiveTab('chat');
   };
 
-  // Add welcome message when app loads
-  useEffect(() => {
-    if (messages.length === 0) {
-      setMessages([{
-        role: 'assistant',
-        content: 'Welcome to the GenAI Research Assistant! How can I help with your research today?'
-      }]);
-    }
-  }, []);
 
   return (
-    <div className="flex h-screen bg-gray-100">
-      {/* Sidebar */}
-      <div className="w-16 bg-gray-800 flex flex-col items-center py-4">
-        <SidebarIcon icon={<MessageSquare />} active={activeTab === 'chat'} onClick={() => setActiveTab('chat')} tooltip="Chat" />
-        <SidebarIcon icon={<History />} active={activeTab === 'history'} onClick={() => setActiveTab('history')} tooltip="History" />
-        <SidebarIcon icon={<FileText />} active={activeTab === 'summary'} onClick={() => setActiveTab('summary')} tooltip="Summary" />
-        <SidebarIcon icon={<Zap />} active={activeTab === 'actions'} onClick={() => setActiveTab('actions')} tooltip="Quick Actions" />
-        <SidebarIcon icon={<ThumbsUp />} active={activeTab === 'recommendations'} onClick={() => setActiveTab('recommendations')} tooltip="Recommendations" />
-      </div>
+    // Outer container with background and centering flex
+    <div className="flex items-center justify-center h-screen bg-gradient-to-br from-blue-100 to-purple-100 p-4"> 
+      {/* Main app container with rounded corners and shadow */}
+      <div className="flex h-full w-full max-w-7xl bg-white rounded-lg shadow-xl overflow-hidden"> 
+        {/* Content area */}
+        <div className="flex-1 flex flex-col">
+          {/* Header */}
+          <header className="bg-white shadow-md p-4 flex justify-between items-center border-b border-gray-200"> 
+            <h1 className="text-2xl font-semibold text-gray-800">GenAI Research Assistant</h1> 
+            {/* Icon buttons */}
+            <div className="space-x-2 flex items-center"> {/* Added flex and items-center for alignment */}
+              <button 
+                onClick={() => setShowHistory(prev => !prev)} 
+                // Styled as a circular icon button
+                className={`p-2 rounded-full transition duration-200 ${showHistory ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`} 
+                title={showHistory ? 'Hide History' : 'Show History'} // Tooltip for accessibility
+              >
+                <History size={20} />
+              </button>
+              <button 
+                onClick={() => setShowQuickActions(prev => !prev)} 
+                 // Styled as a circular icon button
+                className={`p-2 rounded-full transition duration-200 ${showQuickActions ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                 title={showQuickActions ? 'Hide Quick Actions' : 'Show Quick Actions'} // Tooltip for accessibility
+              >
+                <FileText size={20} /> {/* Using FileText icon */}
+              </button>
+            </div>
+          </header>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col">
-        {/* Header */}
-        <header className="bg-white shadow p-4">
-          <h1 className="text-xl font-bold text-gray-800">GenAI Research Assistant</h1>
-        </header>
+          {/* Main chat and sidebar area */}
+          <main className="flex-1 overflow-hidden flex">
+            {/* History Sidebar */}
+            {showHistory && (
+              <div className="w-72 bg-gray-50 border-r border-gray-200 p-4 overflow-y-auto flex-shrink-0"> 
+                <h2 className="text-lg font-semibold mb-4 text-gray-700">Conversation History</h2> 
+                {chatHistory.length === 0 ? (
+                  <p className="text-gray-500 text-sm italic">No history yet. Start a conversation!</p> 
+                ) : (
+                  <div className="space-y-3"> 
+                    {chatHistory.map(conv => (
+                      <div 
+                        key={conv.id} 
+                        className="p-3 bg-white rounded-md shadow-sm hover:bg-blue-50 cursor-pointer transition duration-150 border border-gray-100" 
+                        onClick={() => loadConversation(conv)}
+                      >
+                        <p className="font-medium text-gray-800 text-sm">{conv.title}</p> 
+                        <p className="text-xs text-gray-500 mt-1"> 
+                          {new Date(conv.timestamp).toLocaleString()}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
-        {/* Content Area */}
-        <main className="flex-1 overflow-hidden">
-          {activeTab === 'chat' && (
-            <div className="flex flex-col h-full">
-              <div className="flex-1 overflow-y-auto p-4">
+            {/* Chat Area */}
+            <div className="flex-1 flex flex-col">
+              <div className="flex-1 overflow-y-auto p-6 space-y-4"> 
                 {messages.map((msg, index) => (
                   <div 
                     key={index} 
-                    className={`mb-4 p-3 rounded-lg ${
-                      msg.role === 'user' ? 'bg-blue-100 ml-auto' : 'bg-gray-100'
-                    } max-w-md`}
+                    className={`p-4 rounded-xl max-w-sm break-words ${ 
+                      msg.role === 'user' 
+                      ? 'bg-blue-600 text-white ml-auto rounded-br-sm' 
+                      : 'bg-gray-200 text-gray-800 mr-auto rounded-bl-sm' 
+                    }`}
                   >
-                    {msg.content.split('\n').map((line, i) => (
-                      <p key={i} className={i > 0 ? 'mt-2' : ''}>{line}</p>
-                    ))}
+                    {/* Using pre-wrap to handle newlines correctly */}
+                    <p style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</p> 
                   </div>
                 ))}
                 {isLoading && (
-                  <div className="mb-4 p-3 rounded-lg bg-gray-100 max-w-md">
+                  <div className="p-4 rounded-xl bg-gray-200 max-w-sm mr-auto rounded-bl-sm"> 
                     <div className="flex space-x-2">
                       <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce"></div>
-                      <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce delay-100"></div>
-                      <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce delay-200"></div>
+                      <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce delay-150"></div> 
+                      <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce delay-300"></div> 
                     </div>
                   </div>
                 )}
                 <div ref={messagesEndRef} />
               </div>
-              <div className="p-4 border-t bg-white">
-                <div className="flex">
-                  <textarea 
-                    value={input} 
-                    onChange={(e) => setInput(e.target.value)} 
+
+              {/* Input Area */}
+              <div className="p-4 border-t border-gray-200 bg-white"> 
+                <div className="flex items-end bg-gray-100 rounded-lg border border-gray-300 overflow-hidden pr-2"> 
+                  <textarea
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
                     onKeyPress={handleKeyPress}
-                    className="flex-1 border rounded-l-lg p-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="flex-1 bg-transparent p-3 focus:outline-none resize-none text-gray-700" 
                     placeholder="Ask me anything about research papers..."
-                    rows="2"
+                    rows="1" 
+                    style={{ minHeight: '40px', maxHeight: '160px' }} 
                   />
-                  <button 
-                    onClick={isRecording ? stopRecording : startRecording}
-                    className={`px-4 py-2 ${isRecording ? 'bg-red-500 text-white' : 'bg-gray-200'} hover:bg-opacity-80`}
-                    title={isRecording ? "Stop recording" : "Start voice input"}
-                  >
-                    <Mic size={20} />
-                  </button>
-                  <button 
-                    onClick={sendMessage} 
-                    disabled={isLoading || !input.trim()}
-                    className="bg-blue-500 text-white px-4 py-2 rounded-r-lg hover:bg-blue-600 disabled:bg-blue-300 flex items-center justify-center"
-                  >
-                    <Send size={20} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'history' && (
-            <div className="p-4 overflow-y-auto h-full">
-              <h2 className="text-lg font-semibold mb-4">Conversation History</h2>
-              {chatHistory.length === 0 ? (
-                <p className="text-gray-500">No history yet. Start a conversation!</p>
-              ) : (
-                <div className="space-y-2">
-                  {chatHistory.map(conv => (
-                    <div 
-                      key={conv.id} 
-                      className="p-3 bg-white rounded-lg shadow hover:bg-gray-50 cursor-pointer"
-                      onClick={() => loadConversation(conv)}
+                  {/* Buttons */}
+                  <div className="flex space-x-1 pb-1 pl-1"> 
+                    <button
+                      onClick={isRecording ? stopRecording : startRecording}
+                      className={`p-2 rounded-full ${isRecording ? 'bg-red-500 text-white' : 'bg-gray-300 text-gray-700'} hover:bg-opacity-80 transition duration-200`} 
+                      title={isRecording ? "Stop recording" : "Start voice input"}
                     >
-                      <p className="font-medium">{conv.title}</p>
-                      <p className="text-sm text-gray-500">
-                        {new Date(conv.timestamp).toLocaleString()}
-                      </p>
-                    </div>
-                  ))}
+                      <Mic size={20} />
+                    </button>
+                     <button
+                      onClick={generatePrompt}
+                      disabled={isGeneratingPrompt}
+                      className="p-2 rounded-full bg-yellow-400 text-yellow-900 hover:bg-yellow-500 disabled:opacity-50 transition duration-200" 
+                      title="Generate Research Prompt"
+                    >
+                      <Lightbulb size={20} />
+                    </button>
+                    <button
+                      onClick={sendMessage}
+                      disabled={isLoading || !input.trim()}
+                      className="p-2 rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-300 disabled:text-gray-100 transition duration-200" 
+                      title="Send Message"
+                    >
+                      <Send size={20} />
+                    </button>
+                  </div>
                 </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === 'summary' && (
-            <div className="p-4 overflow-y-auto h-full">
-              <h2 className="text-lg font-semibold mb-4">Conversation Summary</h2>
-              <div className="bg-white p-4 rounded-lg shadow">
-                <p>{generateSummary()}</p>
               </div>
-              {messages.length > 0 && (
-                <div className="mt-4 bg-white p-4 rounded-lg shadow">
-                  <h3 className="font-medium mb-2">Key Topics</h3>
-                  <div className="flex flex-wrap">
-                    {["Research", "AI Models", "Data Analysis"].map((topic) => (
-                      <span key={topic} className="bg-blue-100 text-blue-800 text-xs font-medium mr-2 px-2.5 py-0.5 rounded">
-                        {topic}
-                      </span>
+            </div>
+
+            {/* Quick Actions Sidebar */}
+            {showQuickActions && (
+              <div className="w-72 bg-gray-50 border-l border-gray-200 p-4 overflow-y-auto flex-shrink-0"> 
+                <h2 className="text-lg font-semibold mb-4 text-gray-700">Quick Actions</h2> 
+
+                <div className="mb-6">
+                  <h3 className="font-medium mb-3 text-gray-600">Latest Research</h3> 
+                  {/* Buttons adjusted for consistent styling */}
+                  <button 
+                    onClick={() => handleQuickAction("Find latest AI research")}
+                    className="bg-blue-100 hover:bg-blue-200 text-blue-800 font-medium py-1.5 px-3 rounded-full text-sm mr-2 mb-2 transition duration-200"
+                  >
+                    Latest AI Research
+                  </button>
+                  <button 
+                    onClick={() => handleQuickAction("Find papers published this week")}
+                    className="bg-blue-100 hover:bg-blue-200 text-blue-800 font-medium py-1.5 px-3 rounded-full text-sm mr-2 mb-2 transition duration-200"
+                  >
+                    This Week's Papers
+                  </button>
+                  <button 
+                    onClick={() => handleQuickAction("Trending research topics in 2025")}
+                    className="bg-blue-100 hover:bg-blue-200 text-blue-800 font-medium py-1.5 px-3 rounded-full text-sm mr-2 mb-2 transition duration-200"
+                  >
+                    Trending Topics
+                  </button>
+                </div>
+
+                <div className="mb-6">
+                  <h3 className="font-medium mb-3 text-gray-600">Tags</h3> 
+                  <div className="flex flex-wrap -m-1"> 
+                    {quickActions.tags.map(tag => (
+                      <button 
+                        key={tag} 
+                        onClick={() => handleQuickAction(tag)}
+                        className="m-1 bg-green-100 hover:bg-green-200 text-green-800 font-medium py-1 px-3 rounded-full text-sm transition duration-200" 
+                      >
+                        {tag}
+                      </button>
                     ))}
                   </div>
                 </div>
-              )}
-            </div>
-          )}
 
-          {activeTab === 'actions' && (
-            <div className="p-4 overflow-y-auto h-full">
-              <h2 className="text-lg font-semibold mb-4">Quick Actions</h2>
-              
-              <div className="mb-6">
-                <h3 className="font-medium mb-2">Latest Research</h3>
-                <button 
-                  onClick={() => handleQuickAction("Find latest AI research")}
-                  className="bg-blue-100 hover:bg-blue-200 text-blue-800 font-medium py-1 px-3 rounded-full text-sm mr-2 mb-2"
-                >
-                  Latest AI Research
-                </button>
-                <button 
-                  onClick={() => handleQuickAction("Find papers published this week")}
-                  className="bg-blue-100 hover:bg-blue-200 text-blue-800 font-medium py-1 px-3 rounded-full text-sm mr-2 mb-2"
-                >
-                  This Week's Papers
-                </button>
-                <button 
-                  onClick={() => handleQuickAction("Trending research topics in 2025")}
-                  className="bg-blue-100 hover:bg-blue-200 text-blue-800 font-medium py-1 px-3 rounded-full text-sm mr-2 mb-2"
-                >
-                  Trending Topics
-                </button>
-              </div>
-              
-              <div className="mb-6">
-                <h3 className="font-medium mb-2">Tags</h3>
-                <div className="flex flex-wrap">
-                  {quickActions.tags.map(tag => (
-                    <button 
-                      key={tag} 
-                      onClick={() => handleQuickAction(tag)}
-                      className="bg-green-100 hover:bg-green-200 text-green-800 font-medium py-1 px-3 rounded-full text-sm mr-2 mb-2"
-                    >
-                      {tag}
-                    </button>
-                  ))}
+                <div className="mb-6">
+                  <h3 className="font-medium mb-3 text-gray-600">Technologies</h3> 
+                  <div className="flex flex-wrap -m-1"> 
+                    {quickActions.technologies.map(tech => (
+                      <button 
+                        key={tech} 
+                        onClick={() => handleQuickAction(tech)}
+                        className="m-1 bg-purple-100 hover:bg-purple-200 text-purple-800 font-medium py-1 px-3 rounded-full text-sm transition duration-200" 
+                      >
+                        {tech}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              
-              <div className="mb-6">
-                <h3 className="font-medium mb-2">Technologies</h3>
-                <div className="flex flex-wrap">
-                  {quickActions.technologies.map(tech => (
-                    <button 
-                      key={tech} 
-                      onClick={() => handleQuickAction(tech)}
-                      className="bg-purple-100 hover:bg-purple-200 text-purple-800 font-medium py-1 px-3 rounded-full text-sm mr-2 mb-2"
-                    >
-                      {tech}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              
-              <div>
-                <h3 className="font-medium mb-2">Prompt Templates</h3>
-                <button 
-                  onClick={() => handleQuickAction("Summarize the following paper: ")}
-                  className="bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1 px-3 rounded-full text-sm mr-2 mb-2"
-                >
-                  Paper Summary
-                </button>
-                <button 
-                  onClick={() => handleQuickAction("Compare these research methods: ")}
-                  className="bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1 px-3 rounded-full text-sm mr-2 mb-2"
-                >
-                  Compare Methods
-                </button>
-                <button 
-                  onClick={() => handleQuickAction("Explain this concept in simple terms: ")}
-                  className="bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1 px-3 rounded-full text-sm mr-2 mb-2"
-                >
-                  Simplify Concept
-                </button>
-                <button 
-                  onClick={() => handleQuickAction("Generate a research question about: ")}
-                  className="bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1 px-3 rounded-full text-sm mr-2 mb-2"
-                >
-                  Research Question
-                </button>
-              </div>
-            </div>
-          )}
 
-          {activeTab === 'recommendations' && (
-            <div className="p-4 overflow-y-auto h-full">
-              <h2 className="text-lg font-semibold mb-4">Recommendations</h2>
-              <p className="text-gray-500 mb-4">Based on your conversations, you might be interested in:</p>
-              
-              <div className="space-y-4">
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <h3 className="font-medium">Attention Is All You Need</h3>
-                  <p className="text-sm text-gray-500">Vaswani et al. (2017)</p>
-                  <p className="text-sm mt-2">The paper that introduced the Transformer architecture.</p>
+                <div>
+                  <h3 className="font-medium mb-3 text-gray-600">Prompt Templates</h3> 
+                   {/* Buttons adjusted for consistent styling */}
                   <button 
-                    className="mt-2 text-blue-500 text-sm font-medium"
-                    onClick={() => handleQuickAction("Tell me about the Transformer architecture")}
+                    onClick={() => handleQuickAction("Summarize the following paper: ")}
+                    className="bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1.5 px-3 rounded-full text-sm mr-2 mb-2 transition duration-200"
                   >
-                    Learn More
+                    Paper Summary
+                  </button>
+                  <button 
+                    onClick={() => handleQuickAction("Compare these research methods: ")}
+                    className="bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1.5 px-3 rounded-full text-sm mr-2 mb-2 transition duration-200"
+                  >
+                    Compare Methods
+                  </button>
+                  <button 
+                    onClick={() => handleQuickAction("Explain this concept in simple terms: ")}
+                    className="bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1.5 px-3 rounded-full text-sm mr-2 mb-2 transition duration-200"
+                  >
+                    Simplify Concept
+                  </button>
+                  <button 
+                    onClick={() => handleQuickAction("Generate a research question about: ")}
+                    className="bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1.5 px-3 rounded-full text-sm mr-2 mb-2 transition duration-200"
+                  >
+                    Research Question
                   </button>
                 </div>
-                
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <h3 className="font-medium">BERT: Pre-training of Deep Bidirectional Transformers</h3>
-                  <p className="text-sm text-gray-500">Devlin et al. (2018)</p>
-                  <p className="text-sm mt-2">A landmark paper in NLP that introduced BERT.</p>
-                  <button 
-                    className="mt-2 text-blue-500 text-sm font-medium"
-                    onClick={() => handleQuickAction("Explain BERT")}
-                  >
-                    Learn More
-                  </button>
-                </div>
-                
-                <div className="bg-white p-4 rounded-lg shadow">
-                  <h3 className="font-medium">Language Models are Few-Shot Learners</h3>
-                  <p className="text-sm text-gray-500">Brown et al. (2020)</p>
-                  <p className="text-sm mt-2">Introduced GPT-3 and demonstrated few-shot learning capabilities.</p>
-                  <button 
-                    className="mt-2 text-blue-500 text-sm font-medium"
-                    onClick={() => handleQuickAction("Explain few-shot learning in large language models")}
-                  >
-                    Learn More
-                  </button>
+
+                <div className="mt-6">
+                  <h3 className="font-medium mb-3 text-gray-600">Recommendations</h3> 
+                  <div className="space-y-3"> 
+                    <div className="bg-white p-3 rounded-md shadow-sm border border-gray-100"> 
+                      <h4 className="font-semibold text-sm text-gray-800">Attention Is All You Need</h4> 
+                      <p className="text-xs text-gray-500">Vaswani et al. (2017)</p>
+                      <button 
+                        className="mt-2 text-blue-600 text-xs font-medium hover:underline transition duration-150" 
+                        onClick={() => handleQuickAction("Tell me about the Transformer architecture")}
+                      >
+                        Learn More
+                      </button>
+                    </div>
+
+                    <div className="bg-white p-3 rounded-md shadow-sm border border-gray-100"> 
+                      <h4 className="font-semibold text-sm text-gray-800">BERT: Pre-training of Deep Bidirectional Transformers</h4> 
+                      <p className="text-xs text-gray-500">Devlin et al. (2018)</p>
+                      <button 
+                        className="mt-2 text-blue-600 text-xs font-medium hover:underline transition duration-150" 
+                        onClick={() => handleQuickAction("Explain BERT")}
+                      >
+                        Learn More
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </main>
-      </div>
-    </div>
-  );
-}
-
-// Sidebar Icon Component
-function SidebarIcon({ icon, active, onClick, tooltip }) {
-  return (
-    <div className="relative group">
-      <button 
-        className={`w-10 h-10 flex items-center justify-center rounded-lg mb-4 ${
-          active ? 'bg-blue-500 text-white' : 'text-gray-400 hover:bg-gray-700 hover:text-white'
-        }`}
-        onClick={onClick}
-      >
-        {icon}
-      </button>
-      {tooltip && (
-        <div className="absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
-          {tooltip}
+            )}
+          </main>
         </div>
-      )}
+      </div>
     </div>
   );
 }
