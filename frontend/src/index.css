@@ -1,11 +1,11 @@
-/* Ensure the app takes up the full height of the viewport */
+/*
 html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
 }
 
-/* Base styles that will be applied globally */
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
@@ -17,4 +17,100 @@ body {
 code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
+}*/
+
+/* App.css - Enhanced styling for the app */
+
+/* Import Google Font */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+body {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Prevent scrollbar issues on some systems */
+  overflow: hidden; 
 }
+
+/* Basic animations - keep for loading dots */
+.animate-bounce {
+  animation: bounce 1s infinite;
+}
+
+.delay-150 {
+  animation-delay: 0.15s;
+}
+
+.delay-300 {
+  animation-delay: 0.3s;
+}
+
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px); /* Slightly less bounce */
+  }
+}
+
+/* Custom animation for message entry */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px); /* Start slightly below final position */
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeInUp {
+  animation: fadeInUp 0.4s ease-out forwards; /* Apply animation */
+}
+
+
+/* Scrollbar styling - Adjusted */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #e0e0e0; /* Lighter track */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #a0a0a0; /* Darker thumb */
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #808080; /* Even darker on hover */
+}
+
+/* Apply custom scrollbar to specific elements if needed, e.g., chat area or sidebars */
+.overflow-y-auto::-webkit-scrollbar {
+    width: 8px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-track {
+    background: #f0f0f0;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb {
+    background: #c0c0c0;
+    border-radius: 4px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb:hover {
+    background: #a0a0a0;
+}
+
+
+/* Transitions (Tailwind mostly handles these, but keep if specific custom transitions are needed) */
+/* .transition-opacity {} */
+/* .transition-transform {} */
