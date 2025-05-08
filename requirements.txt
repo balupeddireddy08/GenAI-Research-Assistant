@@ -1,4 +1,5 @@
 fastapi
+asyncpg
 uvicorn
 sqlalchemy[asyncpg]
 pydantic

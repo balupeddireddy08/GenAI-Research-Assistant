@@ -1,3 +1,8 @@
+"""
+Search agent for the GenAI Research Assistant.
+This file implements a specialized agent responsible for performing web searches,
+generating optimized search queries, and processing search results.
+"""
 from typing import Dict, Any, List, Optional
 import json
 import aiohttp

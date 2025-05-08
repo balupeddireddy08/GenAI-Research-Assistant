@@ -1,3 +1,8 @@
+"""
+LLM utility functions for the GenAI Research Assistant.
+This file provides a unified interface for interacting with various LLM providers
+(OpenAI, Anthropic, Google), handling client initialization, completions, and embeddings.
+"""
 from typing import Any, Dict, List, Optional, Union
 import openai
 import anthropic

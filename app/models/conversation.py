@@ -1,3 +1,8 @@
+"""
+Conversation and Message database models for the GenAI Research Assistant.
+This file defines the SQLAlchemy ORM models for storing chat conversations and
+their associated messages, including relationships between them.
+"""
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -25,7 +30,7 @@ class Conversation(Base):
     embedding = Column(Text, nullable=True)
     
     # Conversation metadata
-    metadata = Column(JSONB, nullable=True)
+    meta_data = Column(JSONB, nullable=True)
 
 
 class Message(Base):
@@ -40,7 +45,7 @@ class Message(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Message metadata (e.g., thinking process, sources, etc.)
-    metadata = Column(JSONB, nullable=True)
+    meta_data = Column(JSONB, nullable=True)
     
     # Relationship: many messages belong to one conversation
     conversation = relationship("Conversation", back_populates="messages")

@@ -1,3 +1,8 @@
+"""
+Chat endpoint API for the GenAI Research Assistant.
+This file defines the API routes for chat functionality, including sending messages,
+creating conversations, and retrieving AI responses.
+"""
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
@@ -48,7 +53,7 @@ async def chat(
         conversation_id=conversation_id,
         role="user",
         content=request.message,
-        metadata=request.metadata or {}
+        meta_data=request.metadata or {}
     )
     db.add(user_message)
     await db.commit()
@@ -70,9 +75,9 @@ async def chat(
             role=ai_response.role,
             content=ai_response.content,
             created_at=ai_response.created_at,
-            metadata=ai_response.metadata
+            metadata=ai_response.meta_data
         ),
-        recommendations=ai_response.metadata.get("recommendations") if ai_response.metadata else None
+        recommendations=ai_response.meta_data.get("recommendations") if ai_response.meta_data else None
     )
 
 

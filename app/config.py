@@ -1,3 +1,8 @@
+"""
+Configuration settings for the GenAI Research Assistant application.
+This file defines environment-based settings including database connections,
+API keys for LLM services, and application parameters using Pydantic.
+"""
 import os
 from pydantic_settings import BaseSettings
 from typing import Optional
@@ -13,7 +18,7 @@ class Settings(BaseSettings):
     # Database settings
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL", 
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/research_assistant"
+        "postgresql+asyncpg://postgres:password@localhost:5432/research_assistant"
     )
     
     # LLM settings

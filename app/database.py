@@ -1,3 +1,8 @@
+"""
+Database configuration and connection handling for the GenAI Research Assistant.
+This file configures SQLAlchemy async database connections, provides session 
+management, and defines the declarative base for ORM models.
+"""
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.config import settings

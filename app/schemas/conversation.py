@@ -1,3 +1,8 @@
+"""
+Pydantic schemas for conversation-related data structures.
+This file defines data validation models for conversation creation, retrieval,
+updates, and chat interactions used throughout the API.
+"""
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime

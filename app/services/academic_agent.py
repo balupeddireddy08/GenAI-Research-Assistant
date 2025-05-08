@@ -1,3 +1,8 @@
+"""
+Academic search agent for the GenAI Research Assistant.
+This file implements a specialized agent for searching academic papers from ArXiv,
+parsing academic data, assessing relevance, and generating scholarly summaries.
+"""
 from typing import Dict, Any, List, Optional
 import json
 import aiohttp

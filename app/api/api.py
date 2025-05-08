@@ -1,3 +1,8 @@
+"""
+API router configuration for the GenAI Research Assistant.
+This file configures the main API router and includes all endpoint-specific routers
+with their respective prefixes and tags for organization.
+"""
 from fastapi import APIRouter
 from app.api.endpoints import chat, history, recommendations
 

@@ -1,3 +1,8 @@
+"""
+Chat service for handling message processing in the GenAI Research Assistant.
+This file contains functionality for processing user messages through the agent
+orchestrator, saving responses to the database, and managing conversation state.
+"""
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
@@ -48,7 +53,7 @@ async def process_message(
         role="assistant",
         content=response_content,
         created_at=datetime.now(),
-        metadata=metadata or {}
+        meta_data=metadata or {}
     )
     
     # Save the message to the database

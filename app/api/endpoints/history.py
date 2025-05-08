@@ -1,3 +1,8 @@
+"""
+Conversation history endpoint API for the GenAI Research Assistant.
+This file defines API routes for managing conversation history, including listing
+conversations, retrieving conversation details, and deleting conversations.
+"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -58,7 +63,7 @@ async def get_conversation(
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         user_id=conversation.user_id,
-        metadata=conversation.metadata,
+        metadata=conversation.meta_data,
         messages=messages
     )
 

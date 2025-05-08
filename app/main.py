@@ -1,3 +1,8 @@
+"""
+Main application entry point for the GenAI Research Assistant API.
+This file initializes the FastAPI application, configures CORS middleware, 
+includes API routers, and sets up database initialization on startup.
+"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.api import api_router

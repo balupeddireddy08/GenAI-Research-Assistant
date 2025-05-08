@@ -1,3 +1,8 @@
+"""
+User database model for the GenAI Research Assistant.
+This file defines the SQLAlchemy ORM model for user accounts, including
+authentication information, profile data, and user preferences.
+"""
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import JSONB

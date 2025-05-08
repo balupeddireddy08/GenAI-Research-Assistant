@@ -1,3 +1,8 @@
+"""
+Agent orchestration system for the GenAI Research Assistant.
+This file implements the central orchestrator that coordinates multiple specialized
+agents, analyzes user intent, generates execution plans, and synthesizes responses.
+"""
 from typing import List, Dict, Any, Tuple, Optional
 import json
 import asyncio

@@ -1,3 +1,9 @@
+"""
+Synthesis agent for the GenAI Research Assistant.
+This file implements a specialized agent responsible for combining information from
+other agents, formatting results, extracting sources, and generating comprehensive
+responses to user queries.
+"""
 from typing import Dict, Any, List, Tuple, Optional
 import json
 from datetime import datetime

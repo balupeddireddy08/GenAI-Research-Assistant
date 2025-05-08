@@ -1,3 +1,8 @@
+"""
+Recommendations service for the GenAI Research Assistant.
+This file provides functionality for generating content recommendations based on
+conversation history, helping users discover related research and resources.
+"""
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -45,8 +50,8 @@ async def get_recommendations_for_conversation(
     latest_assistant_messages = [msg for msg in messages if msg.role == "assistant"]
     if latest_assistant_messages:
         latest_message = latest_assistant_messages[-1]
-        if latest_message.metadata and "recommendations" in latest_message.metadata:
-            return latest_message.metadata["recommendations"]
+        if latest_message.meta_data and "recommendations" in latest_message.meta_data:
+            return latest_message.meta_data["recommendations"]
     
     # Initialize LLM client
     llm_client = get_llm_client(settings)

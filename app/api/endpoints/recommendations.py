@@ -1,3 +1,8 @@
+"""
+Recommendations endpoint API for the GenAI Research Assistant.
+This file defines API routes for retrieving content recommendations based
+on conversation history and user interests.
+"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Dict, Any
