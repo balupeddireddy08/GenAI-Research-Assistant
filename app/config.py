@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # LLM configuration
     PRIMARY_LLM: str = os.getenv("PRIMARY_LLM", "gemini-2.0-flash-lite")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    CONTEXT_MESSAGE_LIMIT: int = int(os.getenv("CONTEXT_MESSAGE_LIMIT", "10"))
     
     # Supported model lists for validation
     OPENAI_MODELS: List[str] = [
