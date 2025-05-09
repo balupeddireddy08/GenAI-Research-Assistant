@@ -62,6 +62,10 @@ class AcademicAgent:
         """
         Generate an optimized academic search query based on the task and intent analysis.
         """
+        # Extract domain-specific terms for query enhancement
+        domains = intent_analysis.get('research_areas', [])
+        entities = intent_analysis.get('entities', [])
+        
         prompt = f"""
         Create an optimized academic search query for finding scholarly papers about:
         
@@ -69,13 +73,18 @@ class AcademicAgent:
         
         Intent analysis:
         - Primary intent: {intent_analysis.get('primary_intent', 'unknown')}
-        - Key entities: {', '.join(intent_analysis.get('entities', []))}
+        - Key entities: {', '.join(entities)}
         - Information type: {intent_analysis.get('info_type', 'general')}
         - Time frame: {intent_analysis.get('time_frame', 'any')}
-        - Research areas: {', '.join(intent_analysis.get('research_areas', []))}
+        - Research areas: {', '.join(domains)}
         
-        The query should be clear, specific, and include relevant keywords to maximize relevance in academic search.
-        Also consider adding relevant academic terminology and concepts.
+        IMPORTANT INSTRUCTIONS:
+        1. The query should be clear, specific, and include relevant academic keywords to maximize relevance
+        2. If this is about comparing different models, methods, or technologies, make sure to include ALL the relevant terms
+        3. Include foundational papers or seminal works in this field when appropriate
+        4. Add domain-specific technical terminology that would appear in academic literature
+        5. Format the query optimally for academic database search
+        
         Return just the search query with no additional commentary.
         """
         
@@ -88,7 +97,7 @@ class AcademicAgent:
         )
         
         # Clean up the result to ensure it's a proper search query
-        return result.strip().strip('"\'')
+        return result.strip().strip('"\'\'`')
     
     async def _search_arxiv(
         self, 

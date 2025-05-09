@@ -9,12 +9,15 @@ from sqlalchemy import text
 from typing import Optional, List
 import uuid
 import logging
+from pydantic import BaseModel
 
 from app.database import get_db
 from app.schemas.conversation import ChatRequest, ChatResponse, ConversationCreate, ConversationResponse
 from app.schemas.message import MessageCreate, MessageResponse
 from app.services.chat_service import process_message
 from app.models.conversation import Conversation, Message
+from app.utils.llm_utils import get_llm_client, get_completion
+from app.config import settings
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# New schema for prompt enhancement
+class PromptEnhanceRequest(BaseModel):
+    prompt: str
+    conversation_id: Optional[str] = None
+
+class PromptEnhanceResponse(BaseModel):
+    enhanced_prompt: str
 
 @router.post("/", response_model=ChatResponse)
 async def chat(
@@ -123,3 +133,91 @@ async def get_conversation_messages(db: AsyncSession, conversation_id: str) -> L
     except Exception as e:
         logger.error(f"Error getting conversation messages: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error retrieving conversation messages")
+
+@router.post("/enhance-prompt", response_model=PromptEnhanceResponse)
+async def enhance_prompt(
+    request: PromptEnhanceRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Enhance a user's prompt to make it more effective for the research assistant.
+    Takes the user's input and transforms it into a more effective research query.
+    """
+    try:
+        logger.info(f"Enhancing prompt: {request.prompt[:50]}...")
+        
+        # Initialize the LLM client directly
+        client_tuple = get_llm_client(settings)  # This returns (client, provider_type)
+        
+        # Get recent conversation messages if available (up to 5 messages)
+        recent_messages = []
+        if request.conversation_id:
+            try:
+                conv_messages = await get_conversation_messages(db, request.conversation_id)
+                # Format the last 5 messages to provide context
+                recent_messages = [
+                    f"{msg.role}: {msg.content}"
+                    for msg in conv_messages[-5:]
+                ]
+            except Exception as e:
+                logger.warning(f"Could not retrieve conversation history: {e}")
+        
+        # Create an improved system prompt for enhancement
+        system_prompt = """
+        You are an expert research prompt enhancer for academic and scientific topics. Your goal is to transform user inputs into highly effective, well-structured research queries.
+        
+        IMPORTANT INSTRUCTIONS:
+        
+        1. ANALYZE the user's original query to understand their research intent
+        
+        2. ENHANCE the prompt by:
+           - Making it more specific, focused and academically rigorous
+           - Structuring it as a direct question or request for information
+           - Adding relevant academic terminology and framing
+           - Including specific request for sources, evidence, or explanations
+           - Preserving the original intent and core meaning
+        
+        3. OUTPUT FORMAT: ONLY return the enhanced prompt itself. 
+           - DO NOT explain your methodology
+           - DO NOT add instructional text about how to search
+           - DO NOT provide a response to the query
+           - DO NOT structure your response as a tutorial or guide
+           - DO NOT include explanations, commentary, or any meta-text
+        
+        4. CRITICAL: Your task is ONLY to rewrite and improve the query, NOT to answer it or explain how to answer it.
+        
+        If provided with conversation context, use it to better understand the user's research area and interests.
+        
+        EXAMPLES OF GOOD TRANSFORMATIONS:
+        
+        Original: "tell me about transformers"
+        Good: "Provide a comprehensive analysis of Transformer architecture in deep learning, including its key components, attention mechanisms, and how it revolutionized NLP tasks. Include comparisons with RNN and LSTM models and cite influential research papers."
+        
+        Original: "NLP latest techniques"
+        Good: "What are the most significant advancements in Natural Language Processing from 2023-2024? Focus on architectural innovations beyond standard Transformer models, emergent capabilities in large language models, and current state-of-the-art approaches for low-resource languages and multimodal integration."
+        
+        Original: "Find the latest AI research"
+        Good: "What are the breakthrough AI research papers published in the past 3 months across major conferences like NeurIPS, ICML, and ACL? Focus on papers with novel methodologies, significant performance improvements, or applications in emerging domains."
+        """
+        
+        # Include recent conversation context if available
+        context_text = ""
+        if recent_messages:
+            context_text = "Recent conversation context:\n" + "\n".join(recent_messages) + "\n\n"
+        
+        # Get enhanced prompt from LLM
+        enhanced_prompt = await get_completion(
+            client_tuple,  # Pass the entire tuple (client, provider)
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"{context_text}Original prompt: {request.prompt}\n\nEnhanced prompt: (ONLY return the improved query text, NO explanations or methodology)"}
+            ],
+        )
+        
+        # Log the result
+        logger.info(f"Enhanced prompt: {enhanced_prompt[:50]}...")
+        return PromptEnhanceResponse(enhanced_prompt=enhanced_prompt)
+        
+    except Exception as e:
+        logger.error(f"Error enhancing prompt: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to enhance prompt: {str(e)}")

@@ -167,15 +167,34 @@ class AgentOrchestrator:
         """
         self._update_status("analyzing_intent", details={"message": "Analyzing intent and extracting key information..."})
         
+        # Quick check for common research/academic terms to help guide the model
+        research_terms = ['research', 'paper', 'study', 'article', 'publication', 
+                          'journal', 'conference', 'findings', 'methodology', 
+                          'analyze', 'analysis', 'evaluate', 'review', 'summarize',
+                          'compare', 'contrast', 'scientific', 'academic']
+        
+        is_likely_research = any(term in user_message.lower() for term in research_terms)
+        research_prompt = ""
+        if is_likely_research:
+            research_prompt = """
+            This appears to be an academic or research-related query. Please prioritize identifying:
+            1. Specific research areas (e.g., NLP, medicine, physics, energy)
+            2. Specific concepts, models, or technologies mentioned
+            3. The type of academic request (summary, comparison, analysis, etc.)
+            4. Relevant methodologies or techniques mentioned
+            """
+        
         prompt = f"""
         You are an intent analysis agent for a GenAI Research Assistant. 
         Analyze the user's query to identify:
         
         1. Primary intent (e.g., search for papers, explain a concept, compare methods)
-        2. Key entities/topics mentioned (e.g., specific papers, authors, research areas)
+        2. Key entities/topics mentioned (e.g., specific papers, authors, research areas, models, technologies)
         3. Type of information needed (e.g., summary, detailed explanation, latest papers)
         4. Relevant time frame (if any)
-        5. Research areas involved
+        5. Research areas involved (be specific about domains like AI, medicine, physics, energy, etc.)
+        
+        {research_prompt}
 
         User query: {user_message}
         
@@ -203,14 +222,27 @@ class AgentOrchestrator:
             })
             return intent
         except json.JSONDecodeError:
-            # Fallback if the LLM doesn't return valid JSON
-            fallback = {
-                "primary_intent": "general_query",
-                "entities": [],
-                "info_type": "explanation",
-                "time_frame": "any",
-                "research_areas": []
-            }
+            # Determine if this is a research query
+            is_research_query = any(term in user_message.lower() for term in research_terms)
+            
+            # Create a better fallback based on the query type
+            if is_research_query:
+                fallback = {
+                    "primary_intent": "academic_research",
+                    "entities": [],
+                    "info_type": "academic_analysis",
+                    "time_frame": "any",
+                    "research_areas": []
+                }
+            else:
+                fallback = {
+                    "primary_intent": "general_query",
+                    "entities": [],
+                    "info_type": "explanation",
+                    "time_frame": "any",
+                    "research_areas": []
+                }
+            
             self._update_status("intent_analyzed", details={
                 "message": "Intent analysis completed with fallback",
                 "intent": fallback
@@ -236,9 +268,17 @@ class AgentOrchestrator:
         - search_agent: For web searches and finding general information. ONLY USE FOR NON-ACADEMIC INFORMATION.
         - synthesis_agent: For combining information and generating the final response.
         
-        IMPORTANT: For any research-related queries about papers, articles, scientific topics, or academic concepts,
-        ALWAYS use the academic_agent as your first choice. Only use search_agent when the query is clearly
-        not academic in nature or requires very recent web information.
+        IMPORTANT RULES:
+        1. For ANY research-related queries about papers, articles, scientific topics, or academic concepts,
+           ALWAYS use the academic_agent as your first choice. Only use search_agent when the query is clearly
+           not academic in nature or requires very recent web information.
+           
+        2. If the user asks to analyze, review, summarize, or critique a research paper but doesn't specify 
+           or include the exact paper, AUTOMATICALLY include a step to search for relevant papers on that topic
+           using the academic_agent. NEVER just say "no specific paper was provided" - instead, find relevant papers.
+           
+        3. For questions about AI, Data Science, Machine Learning, Deep Learning, NLP, or other related topics ALWAYS use both academic_agent 
+           and search_agent to find relevant research papers and general information.
         
         User query: {user_message}
         
@@ -272,19 +312,70 @@ class AgentOrchestrator:
             })
             return plan
         except (json.JSONDecodeError, TypeError):
-            # Fallback now defaults to using academic_agent instead of search_agent
-            fallback_plan = [
-                {
+            # Create a more intelligent fallback based on the query content
+            fallback_plan = []
+            
+            # Check if this is likely about research papers or academic topics
+            research_terms = ['research', 'paper', 'study', 'article', 'publication', 
+                            'journal', 'conference', 'findings', 'methodology', 
+                            'analyze', 'analysis', 'evaluate', 'summarize', 'compare',
+                            'contrast', 'difference', 'similarity', 'review', 'critique',
+                            'scientific', 'academic']
+            
+            # General research domains and fields (keep this list broad and expandable)
+            domain_terms = {
+                'ai_ml': ['artificial intelligence', 'machine learning', 'deep learning', 
+                         'neural network', 'transformer', 'gpt', 'bert', 'llm', 
+                         'language model', 'nlp', 'computer vision'],
+                'health': ['medicine', 'healthcare', 'biology', 'genomics', 'disease', 
+                          'clinical', 'pharmaceutical', 'medical', 'therapy', 'diagnosis'],
+                'energy': ['renewable energy', 'solar', 'wind', 'nuclear', 'hydro', 
+                          'fossil fuels', 'carbon', 'climate', 'sustainability', 
+                          'grid', 'power', 'electricity'],
+                'physics': ['quantum', 'particle', 'relativity', 'astrophysics', 
+                           'cosmology', 'thermodynamics', 'nuclear', 'mechanics'],
+                # Add more domains as needed
+            }
+            
+            # Check if query is research-related
+            is_research_query = any(term in user_message.lower() for term in research_terms)
+            
+            # Detect which domains are relevant
+            relevant_domains = []
+            for domain, terms in domain_terms.items():
+                if any(term in user_message.lower() for term in terms):
+                    relevant_domains.append(domain)
+            
+            # For research queries, use both academic and search agents
+            if is_research_query:
+                # First add academic search for research papers
+                fallback_plan.append({
                     "agent": "academic_agent",
                     "task": f"Search for academic papers about: {user_message}",
                     "priority": "high"
-                },
-                {
-                    "agent": "synthesis_agent",
-                    "task": "Synthesize the results into a comprehensive response",
+                })
+                
+                # Also add web search for recent information at medium priority
+                fallback_plan.append({
+                    "agent": "search_agent",
+                    "task": f"Search for recent information about: {user_message}",
+                    "priority": "medium"
+                })
+            else:
+                # General web search for non-academic queries
+                fallback_plan.append({
+                    "agent": "search_agent",
+                    "task": f"Search for information about: {user_message}",
                     "priority": "high"
-                }
-            ]
+                })
+            
+            # Always include synthesis step
+            fallback_plan.append({
+                "agent": "synthesis_agent",
+                "task": "Synthesize the results into a comprehensive response",
+                "priority": "high"
+            })
+            
             self._update_status("plan_generated", details={
                 "message": "Using fallback search plan",
                 "plan": fallback_plan

@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     TAVILY_API_KEY: Optional[str] = os.getenv("TAVILY_API_KEY")
     
     # LLM configuration
-    PRIMARY_LLM: str = os.getenv("PRIMARY_LLM", "gpt-3.5-turbo")
+    PRIMARY_LLM: str = os.getenv("PRIMARY_LLM", "gemini-2.0-flash-lite")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Supported model lists for validation
@@ -43,7 +43,8 @@ class Settings(BaseSettings):
         "gemini-pro",
         "gemini-1.5-pro",
         "gemini-1.5-flash",
-        "gemini-2.0-flash"
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite"
     ]
     
     # External services

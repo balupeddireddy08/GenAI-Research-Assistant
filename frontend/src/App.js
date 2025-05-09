@@ -189,17 +189,55 @@ function App() {
     }
   };
 
-  const generatePrompt = () => {
-    if (isGeneratingPrompt) return;
+  const generatePrompt = async () => {
+    if (isGeneratingPrompt || !input.trim()) return;
+    
+    const userInput = input.trim();
     setIsGeneratingPrompt(true);
-    setTimeout(() => {
-      const generatedPrompt = "Analyze the relationship between transformer architecture developments and performance improvements in natural language understanding tasks";
-      setInput(generatedPrompt);
+    setProcessingStatus({ message: "Enhancing your research query..." });
+    
+    try {
+      // Save original input for fallback
+      const originalInput = userInput;
+      
+      // Call the backend API to enhance the prompt
+      const response = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:8000/api'}/chat/enhance-prompt`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          prompt: userInput,
+          conversation_id: currentConversationId // Include the current conversation ID if available
+        }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to enhance prompt');
+      }
+      
+      const data = await response.json();
+      
+      // Update the input with the enhanced prompt
+      setInput(data.enhanced_prompt);
+      
+      // Show a subtle notification that the prompt was enhanced
+      setProcessingStatus({ message: "Query enhanced! Send to get more precise results." });
+      
+      // Reset after 3 seconds
+      setTimeout(() => setProcessingStatus(null), 3000);
+    } catch (error) {
+      console.error("Error enhancing prompt:", error);
+      setProcessingStatus({ message: "Could not enhance query. You can still send your original query." });
+      
+      // Reset status after 3 seconds
+      setTimeout(() => setProcessingStatus(null), 3000);
+    } finally {
       setIsGeneratingPrompt(false);
       if (textareaRef.current) {
         textareaRef.current.focus();
       }
-    }, 1500);
+    }
   };
 
   const startRecording = () => {
@@ -1090,10 +1128,18 @@ function App() {
                     </button>
                     <button
                       onClick={generatePrompt}
-                      disabled={isGeneratingPrompt || isLoading}
-                      className="p-2 rounded-full bg-yellow-400 text-yellow-900 hover:bg-yellow-500 disabled:opacity-50 transition duration-200 focus:outline-none focus:ring-2 focus:ring-yellow-300"
-                      title="Generate Research Prompt"
-                      aria-label="Generate a suggested research prompt"
+                      disabled={isGeneratingPrompt || isLoading || !input.trim()}
+                      className={`p-2 rounded-full ${
+                        isGeneratingPrompt 
+                          ? 'bg-yellow-500 text-yellow-100 animate-pulse' 
+                          : (!input.trim() ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-yellow-400 text-yellow-900 hover:bg-yellow-500')
+                      } disabled:opacity-50 transition duration-200 focus:outline-none focus:ring-2 focus:ring-yellow-300`}
+                      title={!input.trim() 
+                        ? "Enter text first to enhance" 
+                        : (isGeneratingPrompt 
+                            ? "Enhancing your research query..." 
+                            : "Enhance this prompt for more precise research results")}
+                      aria-label={isGeneratingPrompt ? "Enhancing research query..." : "Enhance research query for better results"}
                     >
                       <Lightbulb size={20} />
                     </button>
@@ -1117,30 +1163,6 @@ function App() {
             >
               <div>
                 <h2 className="text-lg font-semibold mb-4 text-gray-700">Quick Actions</h2>
-
-                <div className="mb-6">
-                  <h3 className="font-medium mb-3 text-gray-600">Latest Research</h3>
-                  <div className="flex flex-wrap -m-1">
-                    <button
-                      onClick={() => handleQuickAction("Find latest AI research")}
-                      className="m-1 bg-blue-100 hover:bg-blue-200 text-blue-800 font-medium py-1.5 px-3 rounded-full text-sm transition duration-200 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                    >
-                      Latest AI Research
-                    </button>
-                    <button
-                      onClick={() => handleQuickAction("Find papers published this week")}
-                      className="m-1 bg-blue-100 hover:bg-blue-200 text-blue-800 font-medium py-1.5 px-3 rounded-full text-sm transition duration-200 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                    >
-                      This Week's Papers
-                    </button>
-                    <button
-                      onClick={() => handleQuickAction("Trending research topics in 2025")}
-                      className="m-1 bg-blue-100 hover:bg-blue-200 text-blue-800 font-medium py-1.5 px-3 rounded-full text-sm transition duration-200 focus:outline-none focus:ring-2 focus:ring-blue-300"
-                    >
-                      Trending Topics
-                    </button>
-                  </div>
-                </div>
 
                 <div className="mb-6">
                   <h3 className="font-medium mb-3 text-gray-600">Tags</h3>
