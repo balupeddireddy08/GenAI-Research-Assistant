@@ -128,16 +128,31 @@ class SynthesisAgent:
         for k, result in agent_results.items():
             if k.startswith("academic_agent") and 'results' in result:
                 for paper in result['results']:
-                    if 'title' in paper and 'link' in paper:
-                        sources.append({
-                            "title": paper['title'],
-                            "url": paper['link'],
-                            "authors": paper.get('authors', []),
-                            "published_date": paper.get('published_date'),
-                            "type": "academic",
-                            "arxiv_id": paper.get('arxiv_id'),
-                            "relevance": paper.get('relevance_assessment', {}).get('score', 0.5) if 'relevance_assessment' in paper else 0.5
-                        })
+                    if 'title' in paper:
+                        # Always include the main link (abstract page)
+                        if 'link' in paper:
+                            sources.append({
+                                "title": paper['title'],
+                                "url": paper['link'],
+                                "authors": paper.get('authors', []),
+                                "published_date": paper.get('published_date'),
+                                "type": "academic",
+                                "arxiv_id": paper.get('arxiv_id'),
+                                "relevance": paper.get('relevance_assessment', {}).get('score', 0.5) if 'relevance_assessment' in paper else 0.5,
+                                "description": paper.get('abstract', '')[:200] + '...' if paper.get('abstract') else None
+                            })
+                        
+                        # Also include the PDF link if available
+                        if 'pdf_link' in paper:
+                            sources.append({
+                                "title": f"[PDF] {paper['title']}",
+                                "url": paper['pdf_link'],
+                                "authors": paper.get('authors', []),
+                                "published_date": paper.get('published_date'),
+                                "type": "academic_pdf",
+                                "arxiv_id": paper.get('arxiv_id'),
+                                "relevance": paper.get('relevance_assessment', {}).get('score', 0.5) if 'relevance_assessment' in paper else 0.5
+                            })
         
         # Sort sources by relevance
         sources.sort(key=lambda x: x.get('relevance', 0), reverse=True)
@@ -192,11 +207,19 @@ class SynthesisAgent:
         {formatted_results}
         
         Based on the above information, provide a comprehensive, well-structured response to the user's question.
+        
+        IMPORTANT: You MUST format your response using the following structure:
+        1. Start with a main heading (using # syntax) that summarizes the topic
+        2. Add relevant subheadings (using ## syntax) to organize different aspects or sections
+        3. Use bullet points (using * or - syntax) for listing items, features, or key points
+        4. Include direct links to sources when citing specific information
+        5. Format any code examples or technical terms appropriately
+        
         Make sure to:
         1. Directly address the user's specific question and intent
         2. Synthesize information from both web searches and academic papers when available
-        3. Cite sources when providing specific information (e.g., "According to [Source]...")
-        4. Structure your response logically with clear sections if appropriate
+        3. Cite sources when providing specific information (e.g., "According to [Source Title](URL)...")
+        4. Structure your response logically with clear sections
         5. Acknowledge limitations or gaps in the available information
         6. Highlight key points or takeaways
         7. Use an authoritative but conversational tone
@@ -204,6 +227,26 @@ class SynthesisAgent:
         If the available information is insufficient to fully answer the question, acknowledge this and provide
         the best possible response with the information available. Suggest alternative approaches or questions
         if appropriate.
+        
+        EXAMPLE FORMAT:
+        # Main Topic Heading
+        
+        Introductory paragraph addressing the user's question directly.
+        
+        ## First Subtopic
+        
+        * Key point 1
+        * Key point 2
+        * Key point 3
+        
+        According to [Source Name](source_url), additional details about this subtopic...
+        
+        ## Second Subtopic
+        
+        Further elaboration with more bullet points if needed:
+        
+        * Another important aspect
+        * Technical details
         """
         
         # Generate the response

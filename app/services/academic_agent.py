@@ -177,17 +177,26 @@ class AcademicAgent:
                 for author_el in author_elements:
                     authors.append(author_el.text.strip())
                 
-                # Get link (prefer PDF link)
-                link = None
+                # Get ArXiv ID
+                id_text = entry.find('./atom:id', namespace).text
+                arxiv_id = id_text.split('/')[-1]
+                
+                # Get all links with their types
+                links = {}
                 link_elements = entry.findall('./atom:link', namespace)
                 for link_el in link_elements:
-                    if link_el.get('title') == 'pdf':
-                        link = link_el.get('href')
-                        break
+                    link_title = link_el.get('title')
+                    link_url = link_el.get('href')
+                    if link_title:
+                        links[link_title] = link_url
+                    elif link_el.get('rel') == 'alternate':
+                        links['alternate'] = link_url
                 
-                # If no PDF link found, use the first link
-                if not link and link_elements:
-                    link = link_elements[0].get('href')
+                # Get abstract link (HTML version on arxiv.org)
+                abstract_link = links.get('alternate', f"https://arxiv.org/abs/{arxiv_id}")
+                
+                # Get PDF link
+                pdf_link = links.get('pdf', f"https://arxiv.org/pdf/{arxiv_id}.pdf")
                 
                 # Get categories/tags
                 categories = []
@@ -195,16 +204,13 @@ class AcademicAgent:
                 for cat_el in category_elements:
                     categories.append(cat_el.get('term'))
                 
-                # Get ArXiv ID
-                id_text = entry.find('./atom:id', namespace).text
-                arxiv_id = id_text.split('/')[-1]
-                
                 results.append({
                     "title": title,
                     "authors": authors,
                     "abstract": abstract,
                     "published_date": published_date.isoformat(),
-                    "link": link,
+                    "link": abstract_link,  # Main link is the abstract page
+                    "pdf_link": pdf_link,   # Also include direct PDF link
                     "arxiv_id": arxiv_id,
                     "categories": categories
                 })

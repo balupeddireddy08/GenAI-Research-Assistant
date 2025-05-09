@@ -4,7 +4,7 @@ This file defines data validation models for conversation creation, retrieval,
 updates, and chat interactions used throughout the API.
 """
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
 from app.schemas.message import MessageResponse
 
@@ -29,8 +29,8 @@ class ConversationUpdate(BaseModel):
 class ConversationResponse(ConversationBase):
     """Schema for conversation response."""
     id: str = Field(..., description="Conversation ID")
-    created_at: datetime = Field(..., description="Creation timestamp")
-    updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
+    created_at: Union[datetime, str] = Field(..., description="Creation timestamp")
+    updated_at: Optional[Union[datetime, str]] = Field(None, description="Last update timestamp")
     user_id: Optional[str] = Field(None, description="User ID")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional conversation metadata")
 
@@ -58,3 +58,5 @@ class ChatResponse(BaseModel):
     conversation_id: str = Field(..., description="Conversation ID")
     message: MessageResponse = Field(..., description="Assistant response")
     recommendations: Optional[List[Dict[str, Any]]] = Field(None, description="Recommendations based on the conversation")
+    processing_status: Optional[Dict[str, Any]] = Field(None, description="Status information about the processing steps")
+    sources: Optional[List[Dict[str, Any]]] = Field(None, description="Source references used to generate the response")

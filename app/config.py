@@ -5,7 +5,7 @@ API keys for LLM services, and application parameters using Pydantic.
 """
 import os
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, List
 
 
 class Settings(BaseSettings):
@@ -23,13 +23,28 @@ class Settings(BaseSettings):
     
     # LLM settings
     OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
-    ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
     GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")
     TAVILY_API_KEY: Optional[str] = os.getenv("TAVILY_API_KEY")
     
     # LLM configuration
-    PRIMARY_LLM: str = os.getenv("PRIMARY_LLM", "gpt-4")  # Options: gpt-4, claude-3-opus, gemini-1.5-pro
-    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
+    PRIMARY_LLM: str = os.getenv("PRIMARY_LLM", "gpt-3.5-turbo")
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    
+    # Supported model lists for validation
+    OPENAI_MODELS: List[str] = [
+        "gpt-3.5-turbo", 
+        "gpt-3.5-turbo-16k", 
+        "gpt-4", 
+        "gpt-4o",
+        "gpt-4-32k"
+    ]
+    
+    GOOGLE_MODELS: List[str] = [
+        "gemini-pro",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash"
+    ]
     
     # External services
     ARXIV_API_URL: str = "http://export.arxiv.org/api/query"
@@ -37,6 +52,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"  # Allow extra fields in environment
 
 
 # Initialize settings

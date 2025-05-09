@@ -5,7 +5,7 @@ conversation history, helping users discover related research and resources.
 """
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 import json
 
 from app.models.conversation import Conversation, Message

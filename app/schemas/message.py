@@ -4,7 +4,7 @@ This file defines data validation models for message creation, retrieval,
 and responses used throughout the chat API.
 """
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
 
 
@@ -23,7 +23,7 @@ class MessageResponse(MessageBase):
     """Schema for message response."""
     id: str = Field(..., description="Message ID")
     conversation_id: str = Field(..., description="Conversation ID")
-    created_at: datetime = Field(..., description="Creation timestamp")
+    created_at: Union[datetime, str] = Field(..., description="Creation timestamp")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional message metadata")
 
     class Config:
