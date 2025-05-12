@@ -95,13 +95,30 @@ async def chat(
             {"id": conversation_id}
         )
         
-        # Log metadata details
-        logger.info(f"Response metadata keys: {ai_response.meta_data.keys() if ai_response.meta_data else 'None'}")
-        if "sources" in (ai_response.meta_data or {}):
-            logger.info(f"Found {len(ai_response.meta_data['sources'])} sources in response")
-        
         # Extract metadata components
         metadata = ai_response.meta_data or {}
+        
+        # Log metadata details
+        logger.info(f"Response metadata keys: {metadata.keys() if metadata else 'None'}")
+        if "sources" in metadata:
+            logger.info(f"Found {len(metadata['sources'])} sources in response")
+        if "recommendations" in metadata:
+            logger.info(f"Found {len(metadata['recommendations'])} recommendations in response")
+        
+        # Create recommendations array for the response
+        recommendations = metadata.get("recommendations", [])
+        
+        # Extract recommendation tags for UI filtering
+        recommendation_tags = []
+        if recommendations:
+            # Collect unique recommendation types if available
+            recommendation_tags = list(set(
+                rec.get("type") for rec in recommendations 
+                if rec.get("type") and isinstance(rec.get("type"), str)
+            ))
+            # Add these to metadata for frontend use
+            metadata["recommendation_tags"] = recommendation_tags
+            logger.info(f"Extracted recommendation tags: {recommendation_tags}")
         
         # Return the response
         logger.info("Returning response")
@@ -115,7 +132,7 @@ async def chat(
                 created_at=ai_response.created_at,
                 metadata=metadata
             ),
-            recommendations=metadata.get("recommendations"),
+            recommendations=recommendations,  # Explicitly include recommendations
             processing_status=metadata.get("processing_status"),
             sources=metadata.get("sources", [])
         )

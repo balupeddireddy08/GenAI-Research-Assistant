@@ -84,7 +84,7 @@ async def _generate_recommendations(
         conversation_text = conversation_text[:max_length] + "...[truncated]"
     
     prompt = f"""
-    Based on the following conversation, generate 3-5 recommendations for related content 
+    Based on the following conversation, generate 3 recommendations for related content 
     that would be valuable for the user to explore next. These could be research papers, 
     topics, concepts, technologies, or resources that are related to what they're interested in.
     

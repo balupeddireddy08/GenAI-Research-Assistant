@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     
     # App settings
     APP_NAME: str = "GenAI Research Assistant"
+    ASSISTANT_NAME: str = "Research Assistant"
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
     
     # Database settings

@@ -9,10 +9,13 @@ import aiohttp
 import asyncio
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+import logging
 
 from app.config import settings
 from app.utils.llm_utils import get_llm_client, get_completion
 
+# Set up logging
+logger = logging.getLogger(__name__)
 
 class AcademicAgent:
     """
@@ -23,6 +26,7 @@ class AcademicAgent:
         self.settings = settings
         self.llm_client = get_llm_client(settings)
         self.arxiv_api_url = settings.ARXIV_API_URL
+        self.logger = logging.getLogger(__name__)
     
     async def search_papers(
         self, 
@@ -51,7 +55,19 @@ class AcademicAgent:
         return {
             "query": search_query,
             "results": processed_results,
-            "source": "arxiv"
+            "source": "arxiv",
+            "sources": [
+                {
+                    "url": result.get("url"),
+                    "title": result.get("title"),
+                    "description": result.get("abstract"),
+                    "type": "academic",
+                    "arxiv_id": result.get("id"),
+                    "authors": result.get("authors"),
+                    "published_date": result.get("published")
+                }
+                for result in processed_results
+            ]
         }
     
     async def _generate_search_query(
@@ -79,7 +95,7 @@ class AcademicAgent:
         - Research areas: {', '.join(domains)}
         
         IMPORTANT INSTRUCTIONS:
-        1. The query should be clear, specific, and include relevant academic keywords to maximize relevance
+        1. The query should be concise, clear, specific, and include relevant academic keywords to maximize relevance
         2. If this is about comparing different models, methods, or technologies, make sure to include ALL the relevant terms
         3. Include foundational papers or seminal works in this field when appropriate
         4. Add domain-specific technical terminology that would appear in academic literature

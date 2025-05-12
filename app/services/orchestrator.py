@@ -13,6 +13,11 @@ from app.config import settings
 from app.services.search_agent import SearchAgent
 from app.services.academic_agent import AcademicAgent
 from app.services.synthesis_agent import SynthesisAgent
+from app.services.task_decomposer import ResearchTaskDecomposer
+from app.services.comparison_agent import PaperComparisonAgent
+from app.services.intent_analysis_agent import IntentAnalysisAgent
+from app.services.identity_handler import IdentityHandler
+from app.services.conversation_handler import ConversationHandler
 from app.utils.llm_utils import get_llm_client, get_completion
 
 # Set up logging
@@ -34,10 +39,20 @@ class AgentOrchestrator:
         }
         
         try:
+            # Core LLM client
             self.llm_client = get_llm_client(settings)
+            
+            # Initialize specialized agents
             self.search_agent = SearchAgent(settings)
             self.academic_agent = AcademicAgent(settings)
             self.synthesis_agent = SynthesisAgent(settings)
+            self.task_decomposer = ResearchTaskDecomposer(settings)
+            self.comparison_agent = PaperComparisonAgent(settings)
+            
+            # New components for improved intent analysis and response handling
+            self.intent_analysis_agent = IntentAnalysisAgent(settings)
+            self.identity_handler = IdentityHandler(settings)
+            self.conversation_handler = ConversationHandler(settings)
         except Exception as e:
             logger.error(f"Error initializing orchestrator: {str(e)}")
             # Still initialize, but we'll handle errors in the process method
@@ -45,6 +60,11 @@ class AgentOrchestrator:
             self.search_agent = None
             self.academic_agent = None
             self.synthesis_agent = None
+            self.task_decomposer = None
+            self.comparison_agent = None
+            self.intent_analysis_agent = None
+            self.identity_handler = None
+            self.conversation_handler = None
     
     async def process(
         self, 
@@ -89,19 +109,100 @@ class AgentOrchestrator:
             return error_msg, metadata
         
         try:
-            # Step 1: Input Analysis - Understand the user's intent and query
+            # Step 1: Intent Analysis - Delegate to the IntentAnalysisAgent
             self._update_status("analyzing_intent", details={"message": "Analyzing your query to understand the intent..."})
-            intent_analysis = await self._analyze_intent(user_message, conversation_history)
+            intent_analysis = await self.intent_analysis_agent.analyze_intent(user_message, conversation_history)
             
-            # Step 2: Plan generation - Plan how to answer the query
-            self._update_status("generating_plan", details={"message": "Creating a plan to answer your query..."})
-            plan = await self._generate_plan(user_message, intent_analysis)
+            # Store intent analysis in metadata
+            metadata["intent_analysis"] = intent_analysis
             
-            # Step 3: Execute the plan using specialized agents
+            # Update status with intent information
+            self._update_status("intent_analyzed", details={
+                "message": f"Intent identified: {intent_analysis.get('primary_intent', 'unknown')}",
+                "intent": intent_analysis
+            })
+            
+            # Step 2: Route to appropriate handler based on intent
+            handler = intent_analysis.get("handler", "research_handler")
+            
+            # Handle identity questions with the identity handler
+            if handler == "identity_handler":
+                self._update_status("handling_identity", details={"message": "Processing identity question..."})
+                handler_result = await self.identity_handler.handle_identity_question(user_message, intent_analysis)
+                response_content = handler_result.get("response", "")
+                
+                # Add handler metadata to main metadata
+                metadata.update(handler_result.get("metadata", {}))
+                metadata["handler_used"] = "identity_handler"
+                
+                # Mark completion
+                self._update_status("completed", details={
+                    "message": "Identity response completed", 
+                    "time_taken": time.time() - self.processing_status["start_time"]
+                })
+                
+                # Update final processing status
+                metadata["processing_status"] = self.processing_status
+                return response_content, metadata
+            
+            # Handle conversational queries with the conversation handler
+            elif handler == "conversation_handler":
+                self._update_status("handling_conversation", details={"message": "Processing conversational message..."})
+                handler_result = await self.conversation_handler.handle_conversation(
+                    user_message, 
+                    intent_analysis,
+                    conversation_history
+                )
+                response_content = handler_result.get("response", "")
+                
+                # Add handler metadata to main metadata
+                metadata.update(handler_result.get("metadata", {}))
+                metadata["handler_used"] = "conversation_handler"
+                
+                # Mark completion
+                self._update_status("completed", details={
+                    "message": "Conversational response completed", 
+                    "time_taken": time.time() - self.processing_status["start_time"]
+                })
+                
+                # Update final processing status
+                metadata["processing_status"] = self.processing_status
+                return response_content, metadata
+            
+            # For research queries, continue with the research pipeline
+            # Step 3: Determine if task decomposition is needed
+            requires_planning = intent_analysis.get("requires_planning", True)
+            
+            # Initialize is_complex_task with default value of False
+            is_complex_task = False
+            
+            if requires_planning:
+                # Check if this is a complex research task that needs decomposition
+                is_complex_task = self._is_complex_research_task(user_message, intent_analysis)
+            
+            if is_complex_task and self.task_decomposer:
+                # For complex tasks, use the task decomposer
+                self._update_status("decomposing_task", details={"message": "Breaking down your complex research query..."})
+                decomposed_tasks = await self.task_decomposer.decompose(user_message)
+                
+                # Store decomposition in metadata
+                metadata["task_decomposition"] = decomposed_tasks
+                
+                # Create execution plan from decomposed tasks
+                plan = self._convert_decomposed_tasks_to_plan(decomposed_tasks)
+            else:
+                # For simpler tasks, use the standard plan generator with reasoning
+                self._update_status("generating_plan", details={"message": "Creating a plan to answer your query..."})
+                plan = await self._generate_plan_with_reasoning(user_message, intent_analysis)
+            
+            # Store plan in metadata
+            metadata["execution_plan"] = plan
+            
+            # Step 4: Execute the plan using specialized agents
             self._update_status("executing_plan", details={"message": "Executing search and retrieval operations...", "plan": plan})
             results = await self._execute_plan(plan, user_message, intent_analysis)
             
-            # Step 4: Synthesize the final response
+            # Step 5: Synthesize the final response
             self._update_status("synthesizing_response", details={"message": "Creating your comprehensive answer..."})
             response_content, synthesis_metadata = await self._synthesize_response(
                 user_message, 
@@ -112,10 +213,9 @@ class AgentOrchestrator:
             # Mark completion
             self._update_status("completed", details={"message": "Response completed", "time_taken": time.time() - self.processing_status["start_time"]})
             
-            # Add plan and intent analysis to metadata for transparency
-            metadata["intent_analysis"] = intent_analysis
-            metadata["execution_plan"] = plan
+            # Update metadata with synthesis results
             metadata.update(synthesis_metadata)
+            metadata["handler_used"] = "research_handler"
             
             # Check if response indicates an error
             if response_content.startswith("Error:"):
@@ -140,13 +240,85 @@ class AgentOrchestrator:
             
             return f"I encountered an error while processing your request: {error_msg}", metadata
     
-    def _update_status(self, step: str, details: Dict[str, Any] = None):
-        """Update the processing status with the current step and details"""
-        self.processing_status["current_step"] = step
-        if step not in self.processing_status["steps_completed"] and step != "error":
-            self.processing_status["steps_completed"].append(step)
+    def _is_complex_research_task(self, user_message: str, intent_analysis: Dict[str, Any]) -> bool:
+        """Determine if a user query is a complex research task that needs decomposition"""
+        # Look for comparison terms
+        comparison_terms = ['compare', 'difference', 'similarities', 'versus', 'vs']
+        has_comparison = any(term in user_message.lower() for term in comparison_terms)
         
+        # Look for explanation terms
+        explanation_terms = ['explain', 'what is', 'how does', 'why is', 'describe']
+        has_explanation = any(term in user_message.lower() for term in explanation_terms)
+        
+        # Look for multiple entities (often indicates comparison)
+        entities = intent_analysis.get('entities', [])
+        has_multiple_entities = isinstance(entities, list) and len(entities) > 1
+        
+        # Check primary intent from analysis
+        primary_intent = intent_analysis.get('primary_intent', '').lower()
+        is_comparison_intent = 'compar' in primary_intent or 'contrast' in primary_intent
+        is_explanation_intent = 'explain' in primary_intent or 'describ' in primary_intent
+        
+        # Check complexity level from intent analysis
+        complexity = intent_analysis.get('complexity', 'simple').lower()
+        is_complex = complexity in ['complex', 'moderate']
+        
+        # Decide if this is a complex task
+        return (has_comparison or is_comparison_intent or 
+                (has_explanation and has_multiple_entities) or
+                is_explanation_intent or
+                is_complex)
+    
+    def _convert_decomposed_tasks_to_plan(self, decomposed_tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert decomposed tasks from task_decomposer to execution plan format"""
+        execution_plan = []
+        
+        # Map operations to agents
+        operation_to_agent = {
+            "search_papers": "academic_agent",
+            "search_web": "search_agent",
+            "analyze_paper": "academic_agent",
+            "compare_papers": "comparison_agent",
+            "compare_research_methods": "comparison_agent",
+            "explain_concept": "comparison_agent",
+            "synthesize_concept": "synthesis_agent",
+            "generate_question": "synthesis_agent"
+        }
+        
+        # Convert each task to the plan format
+        for task in decomposed_tasks:
+            operation = task.get("operation", "search_papers")
+            agent = operation_to_agent.get(operation, "search_agent")
+            
+            execution_plan.append({
+                "agent": agent,
+                "task": task.get("description", "Search for information"),
+                "priority": task.get("priority", 2),
+                "operation": operation,  # Keep the original operation for specialized handling
+                "task_id": task.get("id", "unknown"),  # Keep original task ID for dependency tracking
+                "dependencies": task.get("dependencies", [])  # Keep dependencies for execution order
+            })
+        
+        return execution_plan
+    
+    def _update_status(self, step: str, details: Dict[str, Any] = None):
+        """Update the processing status with a new step and optional details."""
+        # If this is the first time we're seeing this step, add it to completed steps
+        if step not in self.processing_status["steps_completed"]:
+            self.processing_status["steps_completed"].append(step)
+            
+        # Update current step
+        self.processing_status["current_step"] = step
+        
+        # Add or update detailed status
         if details:
+            if "detailed_status" not in self.processing_status:
+                self.processing_status["detailed_status"] = {}
+            
+            # Add timestamp
+            details["timestamp"] = time.time()
+            
+            # Store details
             self.processing_status["detailed_status"][step] = details
         
         # Calculate progress percentage
@@ -154,142 +326,129 @@ class AgentOrchestrator:
         total = self.processing_status["steps_total"]
         self.processing_status["progress_percent"] = min(int((completed / total) * 100), 100)
         
-        # Log the status update
-        logger.info(f"Processing status: {step} - {self.processing_status['progress_percent']}% complete")
+        # Only log major status updates, not subtasks
+        if not step.startswith("subtask_"):
+            logger.info(f"Processing status: {step} - {self.processing_status['progress_percent']}% complete")
     
-    async def _analyze_intent(
-        self, 
-        user_message: str, 
-        conversation_history: List[Dict[str, str]]
-    ) -> Dict[str, Any]:
-        """
-        Analyze the user's intent from their message.
-        """
-        self._update_status("analyzing_intent", details={"message": "Analyzing intent and extracting key information..."})
-        
-        # Quick check for common research/academic terms to help guide the model
-        research_terms = ['research', 'paper', 'study', 'article', 'publication', 
-                          'journal', 'conference', 'findings', 'methodology', 
-                          'analyze', 'analysis', 'evaluate', 'review', 'summarize',
-                          'compare', 'contrast', 'scientific', 'academic']
-        
-        is_likely_research = any(term in user_message.lower() for term in research_terms)
-        research_prompt = ""
-        if is_likely_research:
-            research_prompt = """
-            This appears to be an academic or research-related query. Please prioritize identifying:
-            1. Specific research areas (e.g., NLP, medicine, physics, energy)
-            2. Specific concepts, models, or technologies mentioned
-            3. The type of academic request (summary, comparison, analysis, etc.)
-            4. Relevant methodologies or techniques mentioned
-            """
-        
-        prompt = f"""
-        You are an intent analysis agent for a GenAI Research Assistant. 
-        Analyze the user's query to identify:
-        
-        1. Primary intent (e.g., search for papers, explain a concept, compare methods)
-        2. Key entities/topics mentioned (e.g., specific papers, authors, research areas, models, technologies)
-        3. Type of information needed (e.g., summary, detailed explanation, latest papers)
-        4. Relevant time frame (if any)
-        5. Research areas involved (be specific about domains like AI, medicine, physics, energy, etc.)
-        
-        {research_prompt}
-
-        User query: {user_message}
-        
-        Return your analysis as a JSON object with these fields.
-        """
-        
-        # Include recent conversation history for context if available
-        recent_history = conversation_history[-5:] if len(conversation_history) > 0 else []
-        
-        result = await get_completion(
-            self.llm_client,
-            messages=[
-                {"role": "system", "content": prompt},
-                *recent_history,
-                {"role": "user", "content": user_message}
-            ],
-            response_format={"type": "json_object"} if self.settings.PRIMARY_LLM in self.settings.OPENAI_MODELS else None
-        )
-        
-        try:
-            intent = json.loads(result)
-            self._update_status("intent_analyzed", details={
-                "message": f"Intent identified: {intent.get('primary_intent', 'unknown')}",
-                "intent": intent
-            })
-            return intent
-        except json.JSONDecodeError:
-            # Determine if this is a research query
-            is_research_query = any(term in user_message.lower() for term in research_terms)
-            
-            # Create a better fallback based on the query type
-            if is_research_query:
-                fallback = {
-                    "primary_intent": "academic_research",
-                    "entities": [],
-                    "info_type": "academic_analysis",
-                    "time_frame": "any",
-                    "research_areas": []
-                }
-            else:
-                fallback = {
-                    "primary_intent": "general_query",
-                    "entities": [],
-                    "info_type": "explanation",
-                    "time_frame": "any",
-                    "research_areas": []
-                }
-            
-            self._update_status("intent_analyzed", details={
-                "message": "Intent analysis completed with fallback",
-                "intent": fallback
-            })
-            return fallback
-    
-    async def _generate_plan(
+    async def _generate_simple_plan(
         self, 
         user_message: str, 
         intent_analysis: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        Generate a plan of actions based on the user's intent.
+        Generate a simple execution plan for queries that don't need detailed planning.
         """
-        self._update_status("planning", details={"message": "Creating a search and analysis plan..."})
+        # Check if query needs academic sources
+        info_sources = intent_analysis.get("required_information_sources", [])
+        query_type = intent_analysis.get("query_type", "")
         
+        # Convert string to list if needed
+        if isinstance(info_sources, str):
+            info_sources = [source.strip() for source in info_sources.split(",")]
+        
+        needs_academic = any(term in str(info_sources).lower() for term in ["academic", "papers", "research"]) or \
+                         any(term in query_type.lower() for term in ["research", "academic"])
+        
+        plan = []
+        
+        # Add academic search if needed
+        if needs_academic:
+            plan.append({
+                "agent": "academic_agent",
+                "task": f"Search for academic papers about: {user_message}",
+                "priority": "high",
+                "operation": "search_papers",
+                "task_id": "academic_search"
+            })
+        
+        # Always include web search for general information
+        plan.append({
+            "agent": "search_agent",
+            "task": f"Search for information about: {user_message}",
+            "priority": "high" if not needs_academic else "medium",
+            "operation": "search_web",
+            "task_id": "web_search"
+        })
+        
+        # Always include synthesis step
+        plan.append({
+            "agent": "synthesis_agent",
+            "task": "Synthesize the results into a comprehensive response",
+            "priority": "high",
+            "operation": "synthesize_response",
+            "task_id": "synthesis",
+            "dependencies": ["academic_search", "web_search"] if needs_academic else ["web_search"]
+        })
+        
+        return plan
+    
+    async def _generate_plan_with_reasoning(
+        self, 
+        user_message: str, 
+        intent_analysis: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate a plan with explicit reasoning steps for handling complex queries.
+        
+        This function enhances the planning process by adding explicit reasoning,
+        allowing for more adaptive plan generation based on the user's query.
+        """
+        self._update_status("reasoning", details={"message": "Reasoning about the best approach to answer your query..."})
+        
+        # Create a more sophisticated prompt that emphasizes reasoning
         prompt = f"""
-        Based on the user's query and the intent analysis, create a step-by-step plan to answer the query.
-        For each step, specify which agent should be used and what specific task it should perform.
+        You are a research planning expert for a GenAI Research Assistant that coordinates multiple agents.
         
-        Available agents:
-        - academic_agent: For searching academic databases like ArXiv. STRONGLY PREFER THIS AGENT FOR ALL RESEARCH QUERIES.
-        - search_agent: For web searches and finding general information. ONLY USE FOR NON-ACADEMIC INFORMATION.
-        - synthesis_agent: For combining information and generating the final response.
+        TASK: Create a detailed plan to answer the user's query by coordinating specialized agents.
         
-        IMPORTANT RULES:
-        1. For ANY research-related queries about papers, articles, scientific topics, or academic concepts,
-           ALWAYS use the academic_agent as your first choice. Only use search_agent when the query is clearly
-           not academic in nature or requires very recent web information.
-           
-        2. If the user asks to analyze, review, summarize, or critique a research paper but doesn't specify 
-           or include the exact paper, AUTOMATICALLY include a step to search for relevant papers on that topic
-           using the academic_agent. NEVER just say "no specific paper was provided" - instead, find relevant papers.
-           
-        3. For questions about AI, Data Science, Machine Learning, Deep Learning, NLP, or other related topics ALWAYS use both academic_agent 
-           and search_agent to find relevant research papers and general information.
+        USER QUERY: {user_message}
         
-        User query: {user_message}
+        INTENT ANALYSIS: {json.dumps(intent_analysis, indent=2)}
         
-        Intent analysis: {json.dumps(intent_analysis, indent=2)}
+        AVAILABLE AGENTS:
+        - academic_agent: For searching academic databases like ArXiv
+          Operations: search_papers, get_paper_details
+          Best for: Finding research papers, academic information
+          
+        - search_agent: For web searches and general information
+          Operations: search_web, search_news
+          Best for: Recent information, general knowledge
+          
+        - comparison_agent: For comparing papers or explaining concepts
+          Operations: compare_papers, explain_concept, compare_research_methods
+          Best for: Analyzing differences/similarities, explaining complex topics
+          
+        - synthesis_agent: For combining information and generating final responses
+          Operations: synthesize_response
+          Best for: Creating comprehensive answers from multiple sources
         
-        Return a JSON array of steps, where each step contains:
-        1. agent: The agent to use
-        2. task: The specific task for the agent
-        3. priority: High, medium, or low
+        PLAN CREATION INSTRUCTIONS:
+        1. Start with a short REASONING paragraph explaining why you're selecting certain steps
+        2. Consider what types of information are needed to fully answer the query
+        3. Include dependencies between steps where appropriate
+        4. For research questions, ALWAYS prefer academic_agent over search_agent
+        5. Always include a final synthesis step that depends on previous steps
+        
+        IMPORTANT: You MUST return a JSON object with EXACTLY this structure:
+        {{
+          "reasoning": "Your reasoning about how to answer this query",
+          "plan": [
+            {{
+              "agent": "agent_name",
+              "task": "specific task description",
+              "operation": "operation_name",
+              "priority": 1,
+              "task_id": "unique_id",
+              "dependencies": []
+            }},
+            // additional steps...
+          ]
+        }}
+        
+        The "priority" should be a number (1 for highest priority). Ensure the JSON is valid with no trailing commas.
         """
         
+        # Get the plan with reasoning from the LLM
         result = await get_completion(
             self.llm_client,
             messages=[
@@ -300,87 +459,29 @@ class AgentOrchestrator:
         )
         
         try:
+            # Parse the JSON result
             plan_data = json.loads(result)
-            if "steps" in plan_data:
-                plan = plan_data["steps"]
-            else:
-                plan = plan_data
-                
+            
+            # Extract the plan steps and reasoning
+            plan = plan_data.get("plan", [])
+            reasoning = plan_data.get("reasoning", "")
+            
+            # Log the reasoning
+            logger.info(f"Plan reasoning: {reasoning[:100]}...")
+            
+            # Store reasoning in status
             self._update_status("plan_generated", details={
-                "message": f"Search plan created with {len(plan)} steps",
+                "message": f"Research plan created with {len(plan)} steps",
+                "reasoning": reasoning,
                 "plan": plan
             })
+            
             return plan
         except (json.JSONDecodeError, TypeError):
-            # Create a more intelligent fallback based on the query content
-            fallback_plan = []
+            logger.warning("Failed to parse LLM response for plan generation, using fallback plan")
             
-            # Check if this is likely about research papers or academic topics
-            research_terms = ['research', 'paper', 'study', 'article', 'publication', 
-                            'journal', 'conference', 'findings', 'methodology', 
-                            'analyze', 'analysis', 'evaluate', 'summarize', 'compare',
-                            'contrast', 'difference', 'similarity', 'review', 'critique',
-                            'scientific', 'academic']
-            
-            # General research domains and fields (keep this list broad and expandable)
-            domain_terms = {
-                'ai_ml': ['artificial intelligence', 'machine learning', 'deep learning', 
-                         'neural network', 'transformer', 'gpt', 'bert', 'llm', 
-                         'language model', 'nlp', 'computer vision'],
-                'health': ['medicine', 'healthcare', 'biology', 'genomics', 'disease', 
-                          'clinical', 'pharmaceutical', 'medical', 'therapy', 'diagnosis'],
-                'energy': ['renewable energy', 'solar', 'wind', 'nuclear', 'hydro', 
-                          'fossil fuels', 'carbon', 'climate', 'sustainability', 
-                          'grid', 'power', 'electricity'],
-                'physics': ['quantum', 'particle', 'relativity', 'astrophysics', 
-                           'cosmology', 'thermodynamics', 'nuclear', 'mechanics'],
-                # Add more domains as needed
-            }
-            
-            # Check if query is research-related
-            is_research_query = any(term in user_message.lower() for term in research_terms)
-            
-            # Detect which domains are relevant
-            relevant_domains = []
-            for domain, terms in domain_terms.items():
-                if any(term in user_message.lower() for term in terms):
-                    relevant_domains.append(domain)
-            
-            # For research queries, use both academic and search agents
-            if is_research_query:
-                # First add academic search for research papers
-                fallback_plan.append({
-                    "agent": "academic_agent",
-                    "task": f"Search for academic papers about: {user_message}",
-                    "priority": "high"
-                })
-                
-                # Also add web search for recent information at medium priority
-                fallback_plan.append({
-                    "agent": "search_agent",
-                    "task": f"Search for recent information about: {user_message}",
-                    "priority": "medium"
-                })
-            else:
-                # General web search for non-academic queries
-                fallback_plan.append({
-                    "agent": "search_agent",
-                    "task": f"Search for information about: {user_message}",
-                    "priority": "high"
-                })
-            
-            # Always include synthesis step
-            fallback_plan.append({
-                "agent": "synthesis_agent",
-                "task": "Synthesize the results into a comprehensive response",
-                "priority": "high"
-            })
-            
-            self._update_status("plan_generated", details={
-                "message": "Using fallback search plan",
-                "plan": fallback_plan
-            })
-            return fallback_plan
+            # Create a fallback plan
+            return await self._generate_simple_plan(user_message, intent_analysis)
     
     async def _execute_plan(
         self, 
@@ -389,69 +490,276 @@ class AgentOrchestrator:
         intent_analysis: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Execute the generated plan using specialized agents.
+        Execute a plan by dispatching tasks to the appropriate agents.
+        
+        Args:
+            plan: The execution plan
+            user_message: The original user message
+            intent_analysis: Analysis of the user's intent
+            
+        Returns:
+            Dictionary containing execution results
         """
-        self._update_status("executing", details={"message": "Starting search operations..."})
-        
-        results = {}
-        tasks = []
-        
-        # Sort steps by priority
-        priority_map = {"high": 0, "medium": 1, "low": 2}
-        sorted_plan = sorted(plan, key=lambda x: priority_map.get(x.get("priority", "medium"), 1))
-        
-        # Update status with execution plan
-        self._update_status("executing", details={
-            "message": f"Executing {len(sorted_plan)} search operations",
-            "operations": [f"{step.get('agent')}: {step.get('task')[:50]}..." for step in sorted_plan]
+        self._update_status("executing_plan", details={
+            "plan": plan,
+            "message": "Executing search and retrieval operations..."
         })
         
-        # Create tasks for high priority steps first
-        for i, step in enumerate(sorted_plan):
-            agent_name = step.get("agent")
-            task = step.get("task")
-            
-            # Update status for this specific task
-            subtask_id = f"{agent_name}_{i}"
-            self._update_status("subtask_starting", details={
-                subtask_id: {
-                    "message": f"Starting {agent_name} task: {task[:50]}...",
-                    "status": "in_progress"
-                }
-            })
-            
-            if agent_name == "search_agent":
-                tasks.append(self.search_agent.search(task, intent_analysis))
-            elif agent_name == "academic_agent":
-                tasks.append(self.academic_agent.search_papers(task, intent_analysis))
-            # Add other agent types as needed
+        # Track dependencies
+        task_results = {}
+        completed_task_ids = set()
         
-        # Execute all tasks concurrently
-        if tasks:
-            step_results = await asyncio.gather(*tasks)
+        # Group tasks by priority
+        tasks_by_priority = {}
+        for task in plan:
+            priority = task.get("priority", 1)
+            if priority not in tasks_by_priority:
+                tasks_by_priority[priority] = []
+            tasks_by_priority[priority].append(task)
+        
+        # Execute tasks in priority order
+        priorities = sorted(tasks_by_priority.keys())
+        
+        operations = []
+        for task in plan:
+            operations.append(f"{task.get('agent', 'unknown')}: {task.get('task', '')[:50]}...")
+        
+        self._update_status("executing", details={
+            "message": f"Executing {len(operations)} search operations",
+            "operations": operations
+        })
+        
+        for priority in priorities:
+            tasks = tasks_by_priority[priority]
             
-            # Organize results by agent type
-            for i, step in enumerate(sorted_plan[:len(step_results)]):
-                agent_name = step.get("agent")
-                subtask_id = f"{agent_name}_{i}"
-                results[subtask_id] = step_results[i]
+            # Collect tasks at this priority level that have all dependencies satisfied
+            executable_tasks = []
+            for task in tasks:
+                dependencies = task.get("dependencies", [])
+                if all(dep in completed_task_ids for dep in dependencies):
+                    executable_tasks.append(task)
+            
+            # Execute tasks in parallel
+            task_futures = []
+            for task in executable_tasks:
+                task_id = task.get("task_id", f"task_{len(task_results)}")
+                agent_name = task.get("agent", "")
+                operation = task.get("operation", "")
                 
-                # Update status for the completed subtask
-                self._update_status("subtask_completed", details={
-                    subtask_id: {
-                        "message": f"Completed {agent_name} task",
-                        "status": "completed"
+                # Update status for this subtask
+                self._update_status("subtask_starting", details={
+                    f"{agent_name}_{task_id}": {
+                        "status": "in_progress",
+                        "message": f"Starting {agent_name} task: {task.get('task', '')[:50]}..."
                     }
                 })
+                
+                # Dispatch task to the appropriate agent
+                if agent_name == "academic_agent" and operation == "search_papers":
+                    future = asyncio.ensure_future(
+                        self.academic_agent.search_papers(task.get("task", ""), intent_analysis)
+                    )
+                elif agent_name == "search_agent" and (operation == "web_search" or operation == "search_web"):
+                    future = asyncio.ensure_future(
+                        self.search_agent.search(task.get("task", ""), intent_analysis)
+                    )
+                elif agent_name == "comparison_agent" and (operation == "compare_papers" or operation == "compare_research_methods"):
+                    # Get results from dependent tasks
+                    paper_sets = []
+                    for dep in task.get("dependencies", []):
+                        if dep in task_results:
+                            papers = task_results[dep].get("papers", [])
+                            paper_sets.append(papers)
+                    
+                    future = asyncio.ensure_future(
+                        self._handle_comparison_task(task, paper_sets, user_message, intent_analysis)
+                    )
+                else:
+                    # Unknown agent/operation
+                    future = asyncio.Future()
+                    future.set_result({
+                        "error": f"Unknown agent or operation: {agent_name}/{operation}"
+                    })
+                
+                task_futures.append((task_id, agent_name, future))
+            
+            # Wait for all tasks at this priority level to complete
+            for task_id, agent_name, future in task_futures:
+                try:
+                    result = await future
+                    
+                    # Fallback to search agent if academic agent found insufficient results
+                    if agent_name == "academic_agent" and operation == "search_papers":
+                        papers = result.get("papers", [])
+                        if not papers or len(papers) < 2:
+                            self._update_status("fallback_to_search", details={
+                                "message": f"Academic agent found insufficient results, falling back to search agent",
+                                "papers_found": len(papers)
+                            })
+                            
+                            # Execute the same query with the search agent as fallback
+                            search_result = await self.search_agent.search(task.get("task", ""), intent_analysis)
+                            
+                            # Combine the results
+                            search_items = search_result.get("results", [])
+                            for item in search_items:
+                                if "title" in item and "content" in item:
+                                    papers.append({
+                                        "title": item["title"],
+                                        "summary": item.get("content", ""),
+                                        "link": item.get("url", ""),
+                                        "source": "web_search",
+                                        "source_operation": "search_web",
+                                        "relevance_assessment": item.get("relevance_assessment", {})
+                                    })
+                            
+                            result["papers"] = papers
+                            result["used_fallback"] = True
+                    
+                    task_results[task_id] = result
+                    completed_task_ids.add(task_id)
+                    
+                    # Update status for the completed subtask
+                    self._update_status("subtask_completed", details={
+                        f"{agent_name}_{task_id}": {
+                            "status": "completed",
+                            "message": f"Completed {agent_name} task"
+                        }
+                    })
+                except Exception as e:
+                    logger.error(f"Error executing task {task_id}: {str(e)}")
+                    task_results[task_id] = {"error": str(e)}
+                    completed_task_ids.add(task_id)
         
-        # Update status when all searches are complete
-        result_count = len(results)
         self._update_status("execution_completed", details={
-            "message": f"All searches completed, found {result_count} results",
-            "result_count": result_count
+            "message": f"Completed {len(task_results)} search operations",
+            "result_count": len(task_results)
         })
         
-        return results
+        return task_results
+    
+    async def _handle_comparison_task(
+        self,
+        task: Dict[str, Any],
+        paper_sets: List[List[Dict[str, Any]]],
+        user_message: str,
+        intent_analysis: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Handle comparison tasks based on the operation type
+        
+        Args:
+            task: The comparison task details
+            paper_sets: Lists of papers from dependency tasks
+            user_message: The original user query
+            intent_analysis: The intent analysis results
+            
+        Returns:
+            Dictionary containing comparison results
+        """
+        operation = task.get("operation", "")
+        task_description = task.get("task", "")
+        
+        # Flatten papers from all sets
+        all_papers = []
+        for paper_set in paper_sets:
+            all_papers.extend(paper_set)
+            
+        if not all_papers:
+            # If no papers were found, attempt to get information from the web
+            self._update_status("fallback_to_web_search", details={
+                "message": "No papers found for comparison, searching the web for information",
+                "comparison_task": task_description
+            })
+            
+            # Extract comparison topics from the task or intent analysis
+            topics = []
+            if intent_analysis.get("topic_a"):
+                topics.append(intent_analysis.get("topic_a"))
+            if intent_analysis.get("topic_b"):
+                topics.append(intent_analysis.get("topic_b"))
+                
+            if not topics and "compare" in task_description.lower():
+                # Try to extract topics from the task description
+                task_lower = task_description.lower()
+                compare_idx = task_lower.find("compare")
+                if compare_idx >= 0:
+                    topics_text = task_description[compare_idx + 8:]  # Skip "compare "
+                    if ":" in topics_text:
+                        topics_text = topics_text.split(":", 1)[1]
+                    if "," in topics_text:
+                        topics = [t.strip() for t in topics_text.split(",")]
+            
+            # Search for each topic
+            papers_by_method = {}
+            for topic in topics:
+                search_result = await self.search_agent.search(topic, intent_analysis)
+                search_items = search_result.get("results", [])
+                
+                topic_papers = []
+                for item in search_items:
+                    if "title" in item and "content" in item:
+                        topic_papers.append({
+                            "title": item["title"],
+                            "summary": item.get("content", ""),
+                            "link": item.get("url", ""),
+                            "source": "web_search",
+                            "source_operation": "search_web",
+                            "relevance_assessment": item.get("relevance_assessment", {})
+                        })
+                
+                papers_by_method[topic] = topic_papers
+                all_papers.extend(topic_papers)
+        
+        if operation == "compare_papers":
+            comparison_criteria = task_description
+            if all_papers:
+                return await self.comparison_agent.compare_papers(all_papers, comparison_criteria)
+            else:
+                return {
+                    "comparison_summary": "No papers found to compare.",
+                    "error": "No papers found for comparison"
+                }
+        elif operation == "compare_research_methods":
+            # Extract methods to compare
+            methods = []
+            papers_by_method = {}
+        
+            # Try to get methods from intent analysis
+            if intent_analysis.get("topic_a") and intent_analysis.get("topic_b"):
+                methods = [intent_analysis.get("topic_a"), intent_analysis.get("topic_b")]
+                
+                # Split papers by method if we have papers and methods
+                if all_papers and methods:
+                    # Basic approach: assign papers to methods based on title/summary matching
+                    for method in methods:
+                        method_lower = method.lower()
+                        method_papers = []
+                        
+                        for paper in all_papers:
+                            title = paper.get("title", "").lower()
+                            summary = paper.get("summary", "").lower()
+                            
+                            if method_lower in title or method_lower in summary:
+                                method_papers.append(paper)
+                                
+                        papers_by_method[method] = method_papers
+            
+            return await self.comparison_agent.compare_research_methods(user_message, methods, papers_by_method)
+        elif operation == "explain_concept":
+            # Extract concept from task description
+            concept = task_description.replace("Explain", "").replace("concept", "").strip()
+            if concept:
+                return await self.comparison_agent.explain_concept(concept, all_papers)
+            else:
+                return {
+                    "explanation": "Could not identify concept to explain.",
+                    "error": "No concept specified"
+                }
+        else:
+            return {
+                "error": f"Unknown comparison operation: {operation}"
+            }
     
     async def _synthesize_response(
         self, 
@@ -468,11 +776,15 @@ class AgentOrchestrator:
         })
         
         # Use the synthesis agent to combine all results
-        response_content, metadata = await self.synthesis_agent.synthesize(
+        synthesis_result = await self.synthesis_agent.synthesize(
             user_message=user_message,
             agent_results=results,
             conversation_history=conversation_history
         )
+        
+        # Extract response content and metadata
+        response_content = synthesis_result.get("response", "No response was generated.")
+        metadata = synthesis_result
         
         # Generate recommendations based on the query and results
         self._update_status("generating_recommendations", details={
@@ -500,8 +812,12 @@ class AgentOrchestrator:
         """
         Generate content recommendations based on the user's query and search results.
         """
+        import re
+        import json
+        import logging
+        
         prompt = f"""
-        Based on the user's query and the information gathered, suggest 3-5 related topics 
+        Based on the user's query and the information gathered, suggest exactly 5 related topics 
         or papers that might be of interest to the user.
         
         User query: {user_message}
@@ -510,24 +826,41 @@ class AgentOrchestrator:
         1. title: Title of the paper or topic
         2. description: Brief description (1-2 sentences)
         3. type: "paper", "topic", or "concept"
+        4. relevance_score: A number between 0 and 1 indicating how relevant this is to the query
+        
+        Each recommendation MUST include all these fields. Format your response as a valid JSON array.
+        IMPORTANT: Do NOT wrap your response in additional explanation or markdown. Return ONLY the JSON array.
         """
         
         # Include summaries of all results in the context
         context = "\n\n".join([f"Result {i}: {str(r)[:500]}" for i, r in enumerate(results.values())])
         
-        result = await get_completion(
-            self.llm_client,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": f"{user_message}\n\nContext:\n{context}"}
-            ],
-            response_format={"type": "json_object"} if self.settings.PRIMARY_LLM in self.settings.OPENAI_MODELS else None
-        )
+        # Try multiple times to get valid JSON
+        max_attempts = 2
         
-        try:
-            recommendations_data = json.loads(result)
-            if "recommendations" in recommendations_data:
-                return recommendations_data["recommendations"]
-            return recommendations_data
-        except (json.JSONDecodeError, TypeError):
-            return []
+        for attempt in range(max_attempts):
+            try:
+                result = await get_completion(
+                    self.llm_client,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": f"{user_message}\n\nContext:\n{context}"}
+                    ],
+                    response_format={"type": "json_object"} if self.settings.PRIMARY_LLM in self.settings.OPENAI_MODELS else None
+                )
+                
+                # Clean up the result string if needed
+                if "```json" in result:
+                    # Extract content from markdown code blocks
+                    json_match = re.search(r"```json\s*([\s\S]*?)\s*```", result)
+                    if json_match:
+                        result = json_match.group(1).strip()
+                elif "```" in result:
+                    # Handle generic code blocks
+                    json_match = re.search(r"```\s*([\s\S]*?)\s*```", result)
+                    if json_match:
+                        result = json_match.group(1).strip()
+                return json.loads(result)
+            except Exception as e:
+                logger.error(f"Error generating recommendations: {str(e)}")
+                return []

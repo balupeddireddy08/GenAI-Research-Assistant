@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, Send, Lightbulb, History, X } from 'lucide-react';
+import { Mic, Send, Lightbulb, History, X, Copy, StopCircle, RefreshCw } from 'lucide-react';
 import { sendChatMessage, getConversationHistory, getConversation } from './utils/api';
 
 function App() {
@@ -8,10 +8,14 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const [quickActions] = useState({
-    tags: ['AI', 'Machine Learning', 'NLP', 'Computer Vision', 'Robotics'],
-    technologies: ['PyTorch', 'TensorFlow', 'Transformers', 'BERT', 'GPT']
+  const [quickActions, setQuickActions] = useState({
+    tags: ['AI', 'NLP', 'Robotics'],
+    domains: [
+      'Medicine', 'Engineering', 'Education', 'Agriculture'
+    ],
+    recommendationTags: []
   });
+  const [recommendations, setRecommendations] = useState([]);
   const [chatHistory, setChatHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(true);
   const [showQuickActions, setShowQuickActions] = useState(true);
@@ -20,9 +24,19 @@ function App() {
   const [processingStatus, setProcessingStatus] = useState(null);
   const [detailsModal, setDetailsModal] = useState({ show: false, data: null });
   const [historyFilter, setHistoryFilter] = useState('');
+  const [activeRecommendationTag, setActiveRecommendationTag] = useState(null);
 
   // Track if this is a new session
   const [isNewSession, setIsNewSession] = useState(true);
+
+  // Add a state to track if a message is being regenerated
+  const [regeneratingMessage, setRegeneratingMessage] = useState(false);
+  
+  // Add a state to track the cancellation status
+  const [isCancelled, setIsCancelled] = useState(false);
+
+  // At the beginning of the component, add a new state for history loading
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
@@ -54,20 +68,114 @@ function App() {
   useEffect(() => {
     // Load conversation history on component mount
     const loadHistory = async () => {
+      setIsLoadingHistory(true);
+      
       try {
+        // Using a direct call to the API here to have more control over processing
         const history = await getConversationHistory();
-        console.log("Loaded conversation history:", history);
-        setChatHistory(history || []);
+        
+        // Current date for comparison
+        const now = new Date();
+        
+        // Process titles for better display on first load
+        const processedHistory = history.map(conv => {
+          // If title is poor quality (too short or generic), mark it for better display
+          if (conv.title && (
+              conv.title.length < 5 || 
+              /^(hi|hello|hey|test)$/i.test(conv.title.trim())
+          )) {
+            // Just improve the title, don't change timestamps
+            return {
+              ...conv,
+              displayTitle: "Unnamed Research Query"
+            };
+          }
+          
+          // Check if this is a today's conversation
+          try {
+            const convDate = conv.updated_at ? new Date(conv.updated_at) : 
+                          (conv.created_at ? new Date(conv.created_at) : null);
+            
+            // Skip invalid dates or future dates
+            if (!convDate || isNaN(convDate.getTime()) || convDate > now) {
+              return conv;
+            }
+            
+            if (convDate && now.toDateString() === convDate.toDateString()) {
+              // Mark today's conversations for special styling
+              return {
+                ...conv,
+                isToday: true
+              };
+            }
+          } catch (err) {
+            console.error("Error checking date for today's conversation:", err);
+          }
+          
+          return conv;
+        });
+        
+        console.log("Loaded and processed conversation history:", processedHistory);
+        
+        // Sort the history properly
+        const sortedHistory = sortConversations(processedHistory);
+        
+        setChatHistory(sortedHistory || []);
       } catch (error) {
         console.error("Error loading conversation history:", error);
         setErrorMessage("Failed to load conversation history. Using local storage only.");
         // Use empty array if history can't be loaded
         setChatHistory([]);
       }
+      setIsLoadingHistory(false);
     };
 
     loadHistory();
   }, []);
+
+  // New helper function to consistently sort conversations
+  const sortConversations = (conversations) => {
+    // Get current date for comparison
+    const now = new Date();
+    
+    return [...conversations].sort((a, b) => {
+      // Temporary (in-progress) conversations always come first
+      if (a.isTemp && !b.isTemp) return -1;
+      if (!a.isTemp && b.isTemp) return 1;
+      
+      // Today's conversations come next
+      const aIsToday = a.isToday || false;
+      const bIsToday = b.isToday || false;
+      
+      if (aIsToday && !bIsToday) return -1;
+      if (!aIsToday && bIsToday) return 1;
+      
+      // Then sort by date, ensuring we don't prioritize future dates
+      try {
+        // Parse dates safely
+        let dateA = a.updated_at ? new Date(a.updated_at) : 
+                   (a.created_at ? new Date(a.created_at) : new Date(0));
+        let dateB = b.updated_at ? new Date(b.updated_at) : 
+                   (b.created_at ? new Date(b.created_at) : new Date(0));
+        
+        // Check for invalid dates and future dates
+        if (isNaN(dateA.getTime()) || dateA > now) {
+          // If the date is invalid or in the future, treat it as very old
+          dateA = new Date(0);
+        }
+        if (isNaN(dateB.getTime()) || dateB > now) {
+          // If the date is invalid or in the future, treat it as very old
+          dateB = new Date(0);
+        }
+        
+        // Sort newest first
+        return dateB - dateA;
+      } catch (err) {
+        console.error("Error comparing dates:", err);
+        return 0;
+      }
+    });
+  };
 
   // Initial welcome message effect
   useEffect(() => {
@@ -94,6 +202,208 @@ function App() {
     }, 10);
   };
 
+  // Add a function to handle regenerating a response
+  const handleRegenerateResponse = async () => {
+    if (regeneratingMessage || isLoading) return;
+    
+    // Get the last user message 
+    const lastUserMessage = [...messages].reverse().find(m => m.role === 'user');
+    
+    if (!lastUserMessage) return;
+    
+    // Set states for regeneration
+    setRegeneratingMessage(true);
+    setIsLoading(true);
+    
+    // Remove the last assistant message
+    setMessages(prevMessages => prevMessages.filter(m => m.id !== messages[messages.length - 1].id));
+    
+    try {
+      // Resubmit the last user message
+      const response = await sendChatMessage(
+        lastUserMessage.content, 
+        currentConversationId
+      );
+      
+      // Create bot response from API
+      const botResponse = {
+        role: 'assistant',
+        content: response.message.content,
+        id: response.message.id || Date.now() + 1,
+        processingStatus: response.processing_status,
+        metadata: response.message.metadata,
+        sources: response.sources || [] 
+      };
+
+      setMessages(prevMessages => [...prevMessages, botResponse]);
+      
+      // Update recommendations if available
+      if (botResponse.metadata && botResponse.metadata.recommendations) {
+        setRecommendations(botResponse.metadata.recommendations);
+      }
+      
+    } catch (error) {
+      console.error("Error regenerating response:", error);
+      setMessages(prev => [...prev, { 
+        role: 'assistant', 
+        content: 'Error regenerating response: ' + (error.message || 'Unknown error'),
+        isError: true, 
+        id: Date.now() 
+      }]);
+      
+      setErrorMessage(error.message || 'Failed to regenerate response.');
+    } finally {
+      setRegeneratingMessage(false);
+      setIsLoading(false);
+    }
+  };
+  
+  // Add a function to cancel processing
+  const cancelProcessing = () => {
+    if (!isLoading) return;
+    
+    setIsCancelled(true);
+    setIsLoading(false);
+    setProcessingStatus(null);
+    
+    // Add a cancellation message
+    setMessages(prev => [...prev, { 
+      role: 'assistant', 
+      content: 'Processing was cancelled.',
+      isSystem: true,
+      id: Date.now() 
+    }]);
+    
+    // Reset the cancellation state after a delay
+    setTimeout(() => setIsCancelled(false), 500);
+  };
+
+  // Update the refreshHistory function to use the new sorting helper
+  const refreshHistory = async () => {
+    try {
+      setIsLoadingHistory(true);
+      console.log("Refreshing conversation history...");
+      
+      // Save existing displayTitles and temporary conversations to reapply them after refresh
+      const existingDisplayTitles = {};
+      const tempConversations = [];
+      chatHistory.forEach(conv => {
+        if (conv.displayTitle) {
+          existingDisplayTitles[conv.id] = conv.displayTitle;
+        }
+        // Save temporary conversations to add back to history after refresh
+        if (conv.isTemp) {
+          tempConversations.push(conv);
+        }
+      });
+      
+      const history = await getConversationHistory();
+      console.log("Updated conversation history:", history);
+      
+      // Current date for comparison
+      const now = new Date();
+      
+      // Process each conversation entry
+      let updatedHistory = history.map(conv => {
+        // 1. First try to preserve existing custom display titles
+        if (existingDisplayTitles[conv.id]) {
+          return { ...conv, displayTitle: existingDisplayTitles[conv.id] };
+        }
+        
+        // 2. For items without displayTitle but with poor title quality, generate a better one
+        if (conv.title && (
+            conv.title.length < 5 || 
+            /^(hi|hello|hey|test)$/i.test(conv.title.trim())
+        )) {
+          // Don't use "Conversation" prefix or dates in the title
+          return { ...conv, displayTitle: "Unnamed Research Query" };
+        }
+        
+        // 3. Check if this is a new conversation from today that needs special handling
+        try {
+          const convDate = conv.updated_at ? new Date(conv.updated_at) : 
+                           (conv.created_at ? new Date(conv.created_at) : null);
+          
+          // Skip invalid dates or future dates
+          if (!convDate || isNaN(convDate.getTime()) || convDate > now) {
+            return conv;
+          }
+          
+          if (convDate && now.toDateString() === convDate.toDateString()) {
+            // This is today's conversation - ensure it has the proper display updates
+            console.log("Found today's conversation:", conv.id);
+            return { ...conv, isToday: true };
+          }
+        } catch (err) {
+          console.error("Error processing date in conversation:", err);
+        }
+        
+        return conv;
+      });
+      
+      // Add back temporary conversations that don't exist in the API yet
+      // This ensures user's current conversation stays in the history while waiting for API
+      if (tempConversations.length > 0) {
+        console.log("Adding temporary conversations back to history:", tempConversations);
+        
+        // Only add temp conversations that don't have a real version in the API results
+        const apiConversationIds = new Set(history.map(c => c.id));
+        const tempToAdd = tempConversations.filter(temp => {
+          // Keep temp conversations without a real ID,
+          // or if the current conversation ID is still using the temp ID
+          return !apiConversationIds.has(temp.id) || currentConversationId === temp.id;
+        });
+        
+        // Combine API history with temp conversations
+        updatedHistory = [...tempToAdd, ...updatedHistory];
+      }
+      
+      // Sort the combined history using our helper function
+      updatedHistory = sortConversations(updatedHistory);
+      
+      setChatHistory(updatedHistory || []);
+      setIsLoadingHistory(false);
+      return updatedHistory;
+    } catch (error) {
+      console.error("Error refreshing conversation history:", error);
+      setIsLoadingHistory(false);
+      return null;
+    }
+  };
+
+  // Add a helper function to extract meaningful titles from user messages
+  const extractMeaningfulTitle = (message) => {
+    if (!message) return "Unnamed Research Query";
+    
+    // Trim whitespace and replace multiple spaces with a single space
+    let processedMessage = message.trim().replace(/\s+/g, ' ');
+    
+    // Check if the message is empty after processing
+    if (!processedMessage) return "Unnamed Research Query";
+    
+    // If message is a simple greeting, return a generic title
+    if (/^(hi|hello|hey|test|hi there|hello there)$/i.test(processedMessage)) {
+      return "Unnamed Research Query";
+    }
+    
+    // Try to extract a meaningful part if it's a question or command
+    if (processedMessage.includes('?')) {
+      const question = processedMessage.split('?')[0] + '?';
+      if (question.length > 10) {
+        return question.slice(0, 50) + (question.length > 50 ? '...' : '');
+      }
+    }
+    
+    // For "Compare X and Y" or similar research requests
+    if (/^(compare|analyze|research|explain|summarize|tell me about|what is)/i.test(processedMessage)) {
+      return processedMessage.slice(0, 50) + (processedMessage.length > 50 ? '...' : '');
+    }
+    
+    // Default: truncate to reasonable length for a title
+    return processedMessage.slice(0, 50) + (processedMessage.length > 50 ? '...' : '');
+  };
+
+  // Modified sendMessage function to check for cancellation
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
 
@@ -101,11 +411,37 @@ function App() {
     const messageId = Date.now();
     setErrorMessage(null);
     setProcessingStatus(null);
+    setIsCancelled(false);
 
     // Add user message to chat
     setMessages(prev => [...prev, { ...userMessage, id: messageId }]);
     setInput('');
     setIsLoading(true);
+
+    // For new conversations, add to history immediately after user sends first message
+    // This ensures the conversation appears in history before the AI responds
+    if (isNewSession) {
+      const tempConversationId = `temp-${Date.now()}`;
+      const title = extractMeaningfulTitle(userMessage.content);
+      
+      // Create a temporary conversation entry for the history sidebar
+      const newConversation = {
+        id: tempConversationId,
+        title: title,
+        displayTitle: title,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        message_count: 1,
+        isToday: true,
+        isTemp: true // Mark as temporary until we get real ID from API
+      };
+      
+      // Add to history at the top
+      setChatHistory(prev => [newConversation, ...prev]);
+      
+      // Set the temporary conversation as current (will be updated when API responds)
+      setCurrentConversationId(tempConversationId);
+    }
 
     try {
       // Log that we're continuing or starting a conversation
@@ -115,12 +451,24 @@ function App() {
       if (currentConversationId) {
         console.log(`Conversation has ${messages.length} messages in context`);
       }
+      
+      // Check for cancellation
+      if (isCancelled) {
+        setIsLoading(false);
+        return;
+      }
 
       // Send message to backend API
       const response = await sendChatMessage(
         userMessage.content, 
-        currentConversationId
+        currentConversationId && !currentConversationId.startsWith('temp-') ? currentConversationId : null
       );
+      
+      // Check for cancellation again
+      if (isCancelled) {
+        setIsLoading(false);
+        return;
+      }
 
       console.log("Response received:", response);
       console.log("Processing status:", response.processing_status);
@@ -130,8 +478,22 @@ function App() {
       setProcessingStatus(response.processing_status);
 
       // Update conversation ID if this is a new conversation
-      if (!currentConversationId && response.conversation_id) {
+      if (response.conversation_id) {
         console.log(`Setting conversation ID to: ${response.conversation_id}`);
+        
+        // If we had a temporary ID, replace it in the history
+        if (isNewSession || currentConversationId?.startsWith('temp-')) {
+          // Update the temporary conversation with the real ID
+          setChatHistory(prev => prev.map(conv => 
+            (conv.isTemp && (conv.id === currentConversationId || currentConversationId?.startsWith('temp-'))) ? {
+              ...conv,
+              id: response.conversation_id,
+              isTemp: false
+            } : conv
+          ));
+        }
+        
+        // Set the current conversation ID to the real one from API
         setCurrentConversationId(response.conversation_id);
         setIsNewSession(false);
       }
@@ -148,12 +510,42 @@ function App() {
 
       setMessages(prevMessages => [...prevMessages, botResponse]);
 
+      // Update recommendations from the response metadata
+      if (botResponse.metadata && botResponse.metadata.recommendations) {
+        // Extract recommendations and sort by relevance score (already sorted from backend)
+        const newRecommendations = botResponse.metadata.recommendations;
+        setRecommendations(newRecommendations);
+        
+        // Update recommendation tags if available
+        if (botResponse.metadata.recommendation_tags && botResponse.metadata.recommendation_tags.length > 0) {
+          setQuickActions(prev => ({
+            ...prev,
+            recommendationTags: botResponse.metadata.recommendation_tags
+          }));
+        }
+        
+        console.log(`Added ${newRecommendations.length} recommendations from response metadata`);
+      }
+
+      // Update the message count in history
+      setChatHistory(prev => prev.map(conv => 
+        conv.id === response.conversation_id ? {
+          ...conv,
+          message_count: (conv.message_count || 0) + 1
+        } : conv
+      ));
+
       // Refresh conversation history
-      const history = await getConversationHistory();
-      setChatHistory(history);
+      await refreshHistory();
 
       setIsLoading(false);
     } catch (error) {
+      // Don't show error if we cancelled
+      if (isCancelled) {
+        setIsLoading(false);
+        return;
+      }
+    
       console.error("Error sending message:", error);
       setIsLoading(false);
       setProcessingStatus(null);
@@ -259,8 +651,15 @@ function App() {
     }
   };
 
+  // Update the loadConversation function to use the helper
   const loadConversation = async (conversation) => {
     try {
+      // Skip loading for temporary conversations that don't have an API ID yet
+      if (conversation.isTemp) {
+        console.log("Can't load temporary conversation that's still in progress");
+        return;
+      }
+      
       setIsLoading(true);
       setErrorMessage(null);
       setProcessingStatus(null);
@@ -286,7 +685,26 @@ function App() {
         sources: msg.metadata?.sources || [] // Add sources from metadata
       })));
 
+      // Always extract a better title from the first user message
+      const firstUserMessage = fullConversation.messages.find(m => m.role === 'user');
+      if (firstUserMessage && firstUserMessage.content) {
+        const betterTitle = extractMeaningfulTitle(firstUserMessage.content);
+        // Only update display title if it's better than the existing one
+        if (betterTitle !== "Unnamed Research Query" || 
+            !fullConversation.title || 
+            fullConversation.title.length < 5 || 
+            /^(hi|hello|hey|test)$/i.test(fullConversation.title.trim())) {
+          // Update conversation in local state only (for UI display)
+          setChatHistory(prev => prev.map(c => 
+            c.id === fullConversation.id ? {...c, displayTitle: betterTitle} : c
+          ));
+        }
+      }
+
       console.log(`Loaded ${fullConversation.messages.length} messages from conversation history`);
+
+      // Refresh history to make sure it's up to date
+      await refreshHistory();
 
       // Auto-scroll to the last message after a short delay
       setTimeout(() => {
@@ -373,13 +791,45 @@ function App() {
     setDetailsModal({ show: false, data: null });
   }, [currentConversationId]);
 
-  // Add a visual indicator for the active conversation in the history sidebar
+  // Update the renderConversationItem function to display proper titles and dates
   const renderConversationItem = (conv) => {
-    const isActive = conv.id === currentConversationId;
-    // Ensure valid date or use current date as fallback
-    const updatedDate = conv.updated_at && !isNaN(new Date(conv.updated_at).getTime()) 
-      ? new Date(conv.updated_at) 
-      : new Date();
+    // Check if this is the current conversation (handles both temp and real IDs)
+    const isActive = conv.id === currentConversationId || 
+                    (conv.isTemp && currentConversationId?.startsWith('temp-'));
+    
+    // Make sure we have valid dates by providing fallbacks
+    const now = new Date();
+    let updatedDate;
+    try {
+      // First try to get a valid date from updated_at or created_at
+      const potentialUpdatedDate = conv.updated_at && !isNaN(new Date(conv.updated_at).getTime()) 
+        ? new Date(conv.updated_at) 
+        : conv.created_at && !isNaN(new Date(conv.created_at).getTime())
+          ? new Date(conv.created_at)
+          : new Date();
+      
+      // If the date is in the future, use current date instead
+      updatedDate = potentialUpdatedDate > now ? now : potentialUpdatedDate;
+    } catch (error) {
+      console.error("Error parsing date for conversation display:", error);
+      updatedDate = new Date();
+    }
+    
+    // Check if this is today's conversation
+    const isToday = conv.isToday || new Date().toDateString() === updatedDate.toDateString();
+    
+    // Format the date differently if it's today
+    const formattedDate = isToday
+      ? 'Today, ' + updatedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : updatedDate.toLocaleDateString() + ' ' + 
+        updatedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    
+    // Use displayTitle if available, otherwise use the original title
+    // If both are missing or low quality, use a placeholder
+    let displayTitle = conv.displayTitle || conv.title || "Unnamed Research Query";
+    
+    // If this is a temporary conversation in progress, show a special indicator
+    const isTempInProgress = conv.isTemp && isActive;
     
     return (
       <button
@@ -388,18 +838,25 @@ function App() {
         className={`w-full text-left p-3 rounded-md shadow-sm hover:bg-blue-50 cursor-pointer transition duration-150 border ${
           isActive 
             ? 'border-blue-400 bg-blue-50 shadow-md' 
-            : 'border-gray-100 bg-white'
+            : isToday ? 'border-blue-200 bg-blue-50/30' : 'border-gray-100 bg-white'
         } focus:outline-none focus:ring-2 focus:ring-blue-300`}
       >
         <p className="font-medium text-gray-800 text-sm truncate flex items-center">
           {isActive && (
-            <span className="w-2 h-2 bg-blue-500 rounded-full mr-2 flex-shrink-0" aria-hidden="true"></span>
+            <span className={`w-2 h-2 rounded-full mr-2 flex-shrink-0 ${
+              isTempInProgress ? 'bg-yellow-500 animate-pulse' : 'bg-blue-500'
+            }`} aria-hidden="true"></span>
           )}
-          <span className="truncate">{conv.title}</span>
+          {isToday && !isActive && (
+            <span className="w-2 h-2 bg-blue-300 rounded-full mr-2 flex-shrink-0" aria-hidden="true"></span>
+          )}
+          <span className="truncate" title={displayTitle}>
+            {isTempInProgress ? `${displayTitle} (typing...)` : displayTitle}
+          </span>
         </p>
         <div className="flex justify-between items-center mt-1">
           <p className="text-xs text-gray-500">
-            {updatedDate.toLocaleString()}
+            {formattedDate}
           </p>
           {conv.message_count && (
             <span className="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded-full">
@@ -433,8 +890,23 @@ function App() {
     if (message.processingStatus && message.processingStatus.detailed_status) {
       // Check academic_agent sources
       const academicAgent = message.processingStatus.detailed_status.academic_agent;
-      if (academicAgent && Array.isArray(academicAgent.sources)) {
-        sources.push(...academicAgent.sources);
+      if (academicAgent) {
+        if (Array.isArray(academicAgent.sources)) {
+          sources.push(...academicAgent.sources);
+        }
+        // Also check for sources within the results (for arXiv papers)
+        if (Array.isArray(academicAgent.results)) {
+          academicAgent.results.forEach(result => {
+            sources.push({
+              url: result.url,
+              title: result.title,
+              description: result.abstract,
+              type: "academic",
+              arxiv_id: result.id,
+              authors: result.authors
+            });
+          });
+        }
       }
       
       // Check search_agent results
@@ -443,7 +915,8 @@ function App() {
         sources.push(...searchAgent.results.map(result => ({
           url: result.url || result.link,
           title: result.title,
-          description: result.snippet || result.description
+          description: result.snippet || result.description,
+          type: "web"
         })));
       }
       
@@ -457,8 +930,10 @@ function App() {
           if (Array.isArray(value.results)) {
             sources.push(...value.results.map(result => ({
               url: result.url || result.link,
-              title: result.title,
-              description: result.snippet || result.description
+              title: result.title || "Unknown Source",
+              description: result.snippet || result.description || result.abstract,
+              type: value.source === "arxiv" ? "academic" : "web",
+              arxiv_id: result.id
             })));
           }
         });
@@ -474,7 +949,10 @@ function App() {
         uniqueSources.push({
           url: source.url,
           title: source.title || source.url,
-          description: source.description || source.snippet || null
+          description: source.description || source.snippet || source.abstract || null,
+          type: source.type || "web",
+          arxiv_id: source.arxiv_id,
+          authors: source.authors
         });
       }
     });
@@ -511,15 +989,43 @@ function App() {
         // Process italic text (*text*)
         .replace(/\*([^*]+)\*/g, '<em class="italic">$1</em>')
         
-        // Handle code blocks
-        .replace(/```([^`]+)```/g, '<pre class="bg-gray-100 p-2 rounded my-2 text-sm overflow-x-auto"><code>$1</code></pre>')
+        // Handle code blocks with proper formatting
+        .replace(/```(?:(\w+)\n)?([\s\S]+?)```/g, (match, lang, code) => {
+          const language = lang ? ` language-${lang}` : '';
+          return `<pre class="bg-gray-100 p-3 rounded-md my-3 text-sm overflow-x-auto"><code class="block${language}">${code.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
+        })
         
         // Handle inline code (`code`)
         .replace(/`([^`]+)`/g, '<code class="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-sm">$1</code>');
       
-      // Wrap bullet point lists in ul tags - more complex to handle nested content
-      // First, identify paragraph breaks
-      const paragraphs = processedContent.split('\n\n');
+      // Better paragraph handling - split by double newlines but preserve lists
+      const paragraphs = [];
+      let currentParagraph = '';
+      const lines = processedContent.split('\n');
+      
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const nextLine = i < lines.length - 1 ? lines[i + 1] : '';
+        
+        // Add current line to paragraph
+        currentParagraph += line;
+        
+        // Check if this is a paragraph break (empty line followed by non-empty line)
+        if (line.trim() === '' && nextLine.trim() !== '') {
+          if (currentParagraph.trim()) {
+            paragraphs.push(currentParagraph.trim());
+          }
+          currentParagraph = '';
+        } else if (i === lines.length - 1) {
+          // Last line
+          if (currentParagraph.trim()) {
+            paragraphs.push(currentParagraph.trim());
+          }
+        } else {
+          // Add a newline if not at end
+          currentParagraph += '\n';
+        }
+      }
       
       // Process each paragraph separately
       const processedParagraphs = paragraphs.map(para => {
@@ -527,19 +1033,26 @@ function App() {
         if (para.includes('<li class="ml-5 text-gray-700 mb-1 list-disc">')) {
           return `<ul class="my-2 list-disc pl-5">${para}</ul>`;
         }
+        // Skip wrapping already processed elements (headings, code blocks, etc.)
+        else if (para.startsWith('<h1') || para.startsWith('<h2') || para.startsWith('<h3') || 
+                para.startsWith('<pre') || para.startsWith('<ul')) {
+          return para;
+        }
         // Regular paragraph
-        return `<p class="mb-3">${para}</p>`;
+        else {
+          return `<p class="mb-3">${para}</p>`;
+        }
       });
       
       // Join everything back
       const finalContent = processedParagraphs.join('');
       
-      // Return the content with HTML enabled
+      // Return the content with HTML enabled and full text display
       return (
         <div
           dangerouslySetInnerHTML={{ __html: finalContent }}
-          className="message-content text-gray-800 leading-relaxed"
-          style={{ lineHeight: '1.6' }}
+          className="message-content text-gray-800 leading-relaxed w-full overflow-x-auto"
+          style={{ lineHeight: '1.6', maxWidth: '100%' }}
         />
       );
     } catch (error) {
@@ -547,6 +1060,26 @@ function App() {
       // Fallback to plain text if something goes wrong
       return <p style={{ whiteSpace: 'pre-wrap' }}>{content}</p>;
     }
+  };
+
+  // Add this function to filter recommendations by tag
+  const filterRecommendationsByTag = (tag) => {
+    if (tag === null || tag === activeRecommendationTag) {
+      // If clicking the active tag, clear the filter
+      setActiveRecommendationTag(null);
+    } else {
+      setActiveRecommendationTag(tag);
+    }
+  };
+
+  // Add this function to get filtered recommendations
+  const getFilteredRecommendations = () => {
+    if (!activeRecommendationTag) {
+      return recommendations;
+    }
+    return recommendations.filter(rec => 
+      rec.type && rec.type.toLowerCase() === activeRecommendationTag.toLowerCase()
+    );
   };
 
   return (
@@ -630,8 +1163,6 @@ function App() {
                       {[
                         'analyzing_intent',
                         'intent_analyzed', 
-                        'planning',
-                        'plan_generated',
                         'executing',
                         'execution_completed',
                         'synthesizing',
@@ -738,7 +1269,7 @@ function App() {
                                           </ul>
                                         )}
                                         
-                                        {/* Show sources/results if available */}
+                                        {/* Show sources if available */}
                                         {((value.sources && value.sources.length > 0) || (value.results && value.results.length > 0)) && (
                                           <div className="mt-2 border-t border-gray-100 pt-1">
                                             <div className="font-medium text-gray-600 mt-1 mb-1 text-xs">Sources Found:</div>
@@ -867,8 +1398,24 @@ function App() {
               className={`bg-gray-50 border-r border-gray-200 flex-shrink-0 transition-all duration-300 ease-in-out ${showHistory ? 'w-64 opacity-100' : 'w-0 opacity-0 overflow-hidden'}`}
             >
               <div className="flex flex-col h-full">
-                <div className="p-4 border-b border-gray-200">
-                  <h2 className="text-lg font-semibold text-gray-700">Conversation History</h2>
+                {/* Sidebar header with refresh button */}
+                <div className="flex justify-between items-center p-4 border-b border-gray-200">
+                  <div className="flex items-center">
+                    <h2 className="text-lg font-medium text-gray-700">Conversations</h2>
+                    <span className="ml-2 text-xs text-gray-500">
+                      {isLoadingHistory ? '(Loading...)' : `(${chatHistory.length})`}
+                    </span>
+                  </div>
+                  <button 
+                    onClick={() => refreshHistory()}
+                    className={`text-blue-600 hover:text-blue-800 focus:outline-none p-1 rounded hover:bg-blue-50 ${
+                      isLoadingHistory ? 'animate-spin' : ''
+                    }`}
+                    title="Refresh conversation history"
+                    disabled={isLoadingHistory}
+                  >
+                    <RefreshCw size={16} />
+                  </button>
                 </div>
                 
                 <div className="p-4 border-b border-gray-200">
@@ -914,12 +1461,16 @@ function App() {
                   </div>
                 )}
                 
-                {/* Scrollable conversation list */}
+                {/* Scrollable conversation list with loading indicator */}
                 <div className="flex-1 overflow-y-auto p-4" style={{ 
                   scrollbarWidth: 'thin',
                   scrollbarColor: '#CBD5E0 #EDF2F7'
                 }}>
-                  {chatHistory.length === 0 ? (
+                  {isLoadingHistory ? (
+                    <div className="flex justify-center items-center h-full">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                    </div>
+                  ) : chatHistory.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-center py-8">
                       <p className="text-gray-500 text-sm italic mb-2">No history yet.</p>
                       <p className="text-gray-400 text-xs">Start a conversation to see it here!</p>
@@ -930,19 +1481,6 @@ function App() {
                         <span className="text-xs text-gray-500">
                           {chatHistory.length} conversation{chatHistory.length !== 1 ? 's' : ''}
                         </span>
-                        <button 
-                          className="text-xs text-blue-600 hover:text-blue-800"
-                          onClick={() => {
-                            // Refresh conversation history
-                            getConversationHistory().then(history => {
-                              setChatHistory(history || []);
-                            }).catch(err => {
-                              console.error("Error refreshing history:", err);
-                            });
-                          }}
-                        >
-                          Refresh
-                        </button>
                       </div>
                       
                       {/* Filtered conversations list */}
@@ -950,15 +1488,15 @@ function App() {
                         {chatHistory
                           .filter(conv => 
                             historyFilter === '' || 
-                            conv.title.toLowerCase().includes(historyFilter.toLowerCase())
+                            (conv.displayTitle || conv.title || "").toLowerCase().includes(historyFilter.toLowerCase())
                           )
-                          .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))
+                          // No need to sort again - the list is already sorted by our helper functions
                           .map(conv => renderConversationItem(conv))}
                       </div>
                       
                       {/* No results from filter */}
                       {historyFilter && !chatHistory.filter(conv => 
-                        conv.title.toLowerCase().includes(historyFilter.toLowerCase())
+                        (conv.displayTitle || conv.title || "").toLowerCase().includes(historyFilter.toLowerCase())
                       ).length && (
                         <div className="text-center py-8">
                           <p className="text-gray-500 text-sm">No matching conversations found.</p>
@@ -993,13 +1531,14 @@ function App() {
                     return (
                       <div
                         key={msg.id || index}
-                        className={`p-4 rounded-xl break-words shadow ${
+                        className={`p-4 rounded-xl break-words shadow relative group ${
                           msg.role === 'user'
                           ? `bg-blue-600 text-white ml-auto rounded-br-lg rounded-tl-lg ${isShortMessage ? 'w-auto' : 'max-w-md'} self-end`
                           : msg.isError ? 'bg-red-200 text-red-800 mr-auto rounded-bl-lg rounded-tr-lg border border-red-300 max-w-2xl self-start' 
                           : 'bg-white text-gray-800 mr-auto rounded-bl-lg rounded-tr-lg border border-gray-200 max-w-2xl self-start'
                         }`}
                       >
+                        {/* Message content */}
                         {msg.role === 'user' ? (
                           <p style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</p>
                         ) : (
@@ -1010,48 +1549,98 @@ function App() {
                         {msg.role === 'assistant' && (() => {
                           const sources = getSources(msg);
                           console.log("Sources for message:", msg.id, sources, "Message data:", msg);
+                          
+                          // Group sources by type
+                          const academicSources = sources.filter(s => s.type === 'academic');
+                          const webSources = sources.filter(s => s.type !== 'academic');
+                          
                           return sources.length > 0 ? (
                             <div className="mt-3 pt-2 border-t border-gray-100">
                               <div className="flex items-center mb-1">
                                 <span className="text-xs font-medium text-gray-600">Sources:</span>
                                 <span className="text-xs text-gray-500 ml-1">({sources.length})</span>
+                                
+                                {/* Show breakdown if there are different types */}
+                                {academicSources.length > 0 && webSources.length > 0 && (
+                                  <span className="text-xs text-gray-500 ml-1">
+                                    ({academicSources.length} academic, {webSources.length} web)
+                                  </span>
+                                )}
                               </div>
-                              <div className="space-y-2 max-h-32 overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
-                                {sources.map((source, i) => (
-                                  <div key={i} className={`text-xs ${source.type === 'academic_pdf' ? 'bg-red-50' : 'bg-gray-50'} p-1.5 rounded border ${source.type === 'academic_pdf' ? 'border-red-100' : 'border-gray-100'} hover:bg-gray-100 transition-colors`}>
-                                    <a 
-                                      href={source.url || "#"} 
-                                      target="_blank" 
-                                      rel="noopener noreferrer"
-                                      className="text-blue-600 hover:underline flex items-start font-medium"
-                                    >
-                                      {source.type === 'academic' && source.arxiv_id && (
-                                        <span className="text-xs mr-1.5 text-purple-500">🔬</span>
-                                      )}
-                                      {source.type === 'academic_pdf' && (
-                                        <span className="text-xs mr-1.5 text-red-500">📄</span>
-                                      )}
-                                      {source.type !== 'academic' && source.type !== 'academic_pdf' && (
-                                        <span className="text-xs mr-1.5 text-blue-500">🔗</span>
-                                      )}
-                                      <span className="truncate">
-                                        {source.title || source.url || `Source ${i+1}`}
-                                        {source.arxiv_id && !source.title?.includes(source.arxiv_id) && ` (${source.arxiv_id})`}
-                                      </span>
-                                    </a>
-                                    {source.description && (
-                                      <p className="text-gray-500 text-xs mt-1 ml-5 line-clamp-2" title={source.description}>
-                                        {source.description}
-                                      </p>
-                                    )}
-                                    {source.authors && source.authors.length > 0 && (
-                                      <p className="text-gray-500 text-xs mt-1 ml-5">
-                                        <span className="font-medium">Authors:</span> {source.authors.slice(0, 3).join(', ')}{source.authors.length > 3 ? '...' : ''}
-                                      </p>
-                                    )}
+                              
+                              {/* Academic sources first */}
+                              {academicSources.length > 0 && (
+                                <div className="mb-2">
+                                  <div className="flex items-center">
+                                    <span className="text-xs font-medium text-purple-600 mb-1">Academic Papers</span>
                                   </div>
-                                ))}
-                              </div>
+                                  <div className="space-y-2 max-h-32 overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
+                                    {academicSources.map((source, i) => (
+                                      <div key={`academic-${i}`} className="text-xs bg-purple-50 p-2 rounded border border-purple-100 hover:bg-purple-100 transition-colors">
+                                        <a 
+                                          href={source.url || "#"} 
+                                          target="_blank" 
+                                          rel="noopener noreferrer"
+                                          className="text-blue-600 hover:underline flex items-start font-medium"
+                                        >
+                                          <span className="text-xs mr-1.5 text-purple-500">🔬</span>
+                                          <span className="truncate font-medium">
+                                            {source.title || source.url || `Source ${i+1}`}
+                                          </span>
+                                        </a>
+                                        {source.arxiv_id && (
+                                          <div className="ml-5 mt-1 text-purple-600 text-xs">
+                                            arXiv: {source.arxiv_id}
+                                          </div>
+                                        )}
+                                        {source.description && (
+                                          <p className="text-gray-600 text-xs mt-1 ml-5 line-clamp-2" title={source.description}>
+                                            {source.description}
+                                          </p>
+                                        )}
+                                        {source.authors && source.authors.length > 0 && (
+                                          <p className="text-purple-500 text-xs mt-1 ml-5">
+                                            <span className="font-medium">Authors:</span> {source.authors.slice(0, 3).join(', ')}{source.authors.length > 3 ? '...' : ''}
+                                          </p>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {/* Web sources second */}
+                              {webSources.length > 0 && (
+                                <div>
+                                  {academicSources.length > 0 && (
+                                    <div className="flex items-center">
+                                      <span className="text-xs font-medium text-blue-600 mb-1">Web Sources</span>
+                                    </div>
+                                  )}
+                                  <div className="space-y-2 max-h-32 overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
+                                    {webSources.map((source, i) => (
+                                      <div key={`web-${i}`} className="text-xs bg-gray-50 p-1.5 rounded border border-gray-100 hover:bg-gray-100 transition-colors">
+                                        <a 
+                                          href={source.url || "#"} 
+                                          target="_blank" 
+                                          rel="noopener noreferrer"
+                                          className="text-blue-600 hover:underline flex items-start font-medium"
+                                        >
+                                          <span className="text-xs mr-1.5 text-blue-500">🔗</span>
+                                          <span className="truncate">
+                                            {source.title || source.url || `Source ${i+1}`}
+                                          </span>
+                                        </a>
+                                        {source.description && (
+                                          <p className="text-gray-500 text-xs mt-1 ml-5 line-clamp-2" title={source.description}>
+                                            {source.description}
+                                          </p>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           ) : null;
                         })()}
@@ -1086,6 +1675,48 @@ function App() {
                             </div>
                           </div>
                         )}
+                        
+                        {/* Message action buttons - moved to bottom right */}
+                        <div className="absolute bottom-2 right-2 flex space-x-1 opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity">
+                          {/* Copy button for both message types */}
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(msg.content);
+                              // Optional: Add toast/notification that content was copied
+                            }}
+                            className={`p-1.5 rounded-full ${
+                              msg.role === 'user' 
+                                ? 'bg-blue-700 hover:bg-blue-600 text-white' 
+                                : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+                            } transition-colors`}
+                            title="Copy message"
+                          >
+                            <Copy size={14} />
+                          </button>
+                          
+                          {/* User message: Stop button - only show when loading */}
+                          {msg.role === 'user' && isLoading && !isCancelled && (
+                            <button
+                              onClick={cancelProcessing}
+                              className="p-1.5 rounded-full bg-blue-700 hover:bg-blue-600 text-white transition-colors"
+                              title="Stop processing"
+                            >
+                              <StopCircle size={14} />
+                            </button>
+                          )}
+                          
+                          {/* AI message: Retry button */}
+                          {msg.role === 'assistant' && !isLoading && !regeneratingMessage && (
+                            <button
+                              onClick={handleRegenerateResponse}
+                              className="p-1.5 rounded-full bg-gray-200 hover:bg-gray-300 text-gray-700 transition-colors"
+                              title="Regenerate response"
+                              disabled={isLoading || regeneratingMessage}
+                            >
+                              <RefreshCw size={14} />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -1102,7 +1733,33 @@ function App() {
                 {currentConversationId && (
                   <div className="mb-2 text-xs flex items-center text-blue-600">
                     <span className="mr-1 w-2 h-2 bg-blue-500 rounded-full"></span>
-                    <span>Continuing conversation: {chatHistory.find(c => c.id === currentConversationId)?.title || 'Current chat'}</span>
+                    <span className="font-medium truncate max-w-[calc(100%-80px)]" 
+                       title={chatHistory.find(c => c.id === currentConversationId)?.displayTitle || 
+                             chatHistory.find(c => c.id === currentConversationId)?.title || 
+                             'Current conversation'}>
+                      {chatHistory.find(c => c.id === currentConversationId)?.displayTitle || 
+                       chatHistory.find(c => c.id === currentConversationId)?.title || 
+                       'Current conversation'}
+                    </span>
+                    {!isNewSession && (
+                      <button 
+                        onClick={() => {
+                          // Clear current conversation and start a new one
+                          setCurrentConversationId(null);
+                          setIsNewSession(true);
+                          setMessages([{
+                            role: 'assistant',
+                            content: 'Starting a new conversation. How can I help with your research?',
+                            id: Date.now()
+                          }]);
+                          setInput('');
+                        }}
+                        className="ml-2 text-xs text-gray-500 hover:text-blue-600"
+                        title="Start a new conversation"
+                      >
+                        (New)
+                      </button>
+                    )}
                   </div>
                 )}
                 <div className="flex items-end bg-gray-100 rounded-xl border border-gray-300 overflow-hidden pr-2 shadow-inner focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500 transition duration-200">
@@ -1180,15 +1837,15 @@ function App() {
                 </div>
 
                 <div className="mb-6">
-                  <h3 className="font-medium mb-3 text-gray-600">Technologies</h3>
+                  <h3 className="font-medium mb-3 text-gray-600">Domains</h3>
                   <div className="flex flex-wrap -m-1">
-                    {quickActions.technologies.map(tech => (
+                    {quickActions.domains.map(domain => (
                       <button
-                        key={tech}
-                        onClick={() => handleQuickAction(tech)}
+                        key={domain}
+                        onClick={() => handleQuickAction(domain)}
                         className="m-1 bg-purple-100 hover:bg-purple-200 text-purple-800 font-medium py-1 px-3 rounded-full text-sm transition duration-200 focus:outline-none focus:ring-2 focus:ring-purple-300"
                       >
-                        {tech}
+                        {domain}
                       </button>
                     ))}
                   </div>
@@ -1197,54 +1854,105 @@ function App() {
                 <div>
                   <h3 className="font-medium mb-3 text-gray-600">Prompt Templates</h3>
                   <button
-                    onClick={() => handleQuickAction("Summarize the following paper: ")}
+                    onClick={() => handleQuickAction("Summarize the following concept: ")}
                     className="m-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1.5 px-3 rounded-full text-sm transition duration-200 focus:outline-none focus:ring-2 focus:ring-yellow-300"
                   >
-                    Paper Summary
+                    Summarize
                   </button>
                   <button
                     onClick={() => handleQuickAction("Compare these research methods: ")}
                     className="m-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1.5 px-3 rounded-full text-sm transition duration-200 focus:outline-none focus:ring-2 focus:ring-yellow-300"
                   >
-                    Compare Methods
-                  </button>
+                    Compare
+                    </button>
                   <button
                     onClick={() => handleQuickAction("Explain this concept in simple terms: ")}
                     className="m-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1.5 px-3 rounded-full text-sm transition duration-200 focus:outline-none focus:ring-2 focus:ring-yellow-300"
                   >
-                    Simplify Concept
+                    Simplify
                   </button>
                   <button
-                    onClick={() => handleQuickAction("Generate a research question about: ")}
+                    onClick={() => handleQuickAction("Analyze this following concept: ")}
                     className="m-1 bg-yellow-100 hover:bg-yellow-200 text-yellow-800 font-medium py-1.5 px-3 rounded-full text-sm transition duration-200 focus:outline-none focus:ring-2 focus:ring-yellow-300"
                   >
-                    Research Question
+                    Analyze
                   </button>
                 </div>
 
                 <div className="mt-6">
                   <h3 className="font-medium mb-3 text-gray-600">Recommendations</h3>
-                  <div className="space-y-3">
-                    <div className="bg-white p-3 rounded-md shadow-sm border border-gray-100">
-                      <h4 className="font-semibold text-sm text-gray-800">Attention Is All You Need</h4>
-                      <p className="text-xs text-gray-500">Vaswani et al. (2017)</p>
+                  
+                  {/* Recommendation filters */}
+                  {quickActions.recommendationTags && quickActions.recommendationTags.length > 0 && (
+                    <div className="mb-3 flex flex-wrap -m-1">
                       <button
-                        className="mt-2 text-blue-600 text-xs font-medium hover:underline transition duration-150 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                        onClick={() => handleQuickAction("Tell me about the Transformer architecture")}
+                        onClick={() => filterRecommendationsByTag(null)}
+                        className={`m-1 py-1 px-2.5 rounded-full text-xs transition duration-200 focus:outline-none focus:ring-2 focus:ring-blue-300 ${
+                          !activeRecommendationTag 
+                            ? 'bg-blue-600 text-white' 
+                            : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
+                        }`}
                       >
-                        Learn More
+                        All
                       </button>
+                      {quickActions.recommendationTags.map(tag => (
+                        <button
+                          key={tag}
+                          onClick={() => filterRecommendationsByTag(tag)}
+                          className={`m-1 py-1 px-2.5 rounded-full text-xs transition duration-200 focus:outline-none focus:ring-2 focus:ring-blue-300 ${
+                            activeRecommendationTag === tag 
+                              ? 'bg-blue-600 text-white' 
+                              : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
+                          }`}
+                        >
+                          {tag.charAt(0).toUpperCase() + tag.slice(1)}
+                        </button>
+                      ))}
                     </div>
-                    <div className="bg-white p-3 rounded-md shadow-sm border border-gray-100">
-                      <h4 className="font-semibold text-sm text-gray-800">BERT: Pre-training of Deep Bidirectional Transformers</h4>
-                      <p className="text-xs text-gray-500">Devlin et al. (2018)</p>
-                      <button
-                        className="mt-2 text-blue-600 text-xs font-medium hover:underline transition duration-150 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                        onClick={() => handleQuickAction("Explain BERT")}
-                      >
-                        Learn More
-                      </button>
-                    </div>
+                  )}
+                  
+                  {/* Recommendations list */}
+                  <div className="max-h-64 overflow-y-auto pr-1 space-y-3">
+                    {getFilteredRecommendations().length > 0 ? (
+                      getFilteredRecommendations().map((recommendation, index) => (
+                        <div key={index} className="bg-white p-3 rounded-md shadow-sm border border-gray-100 transition-all hover:shadow-md">
+                          <div className="flex items-start">
+                            <div className="flex-1">
+                              <h4 className="font-semibold text-sm text-gray-800">{recommendation.title}</h4>
+                              {recommendation.type && (
+                                <span className="inline-block mt-1 mb-1 bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full">
+                                  {recommendation.type}
+                                </span>
+                              )}
+                              <p className="text-xs text-gray-600 line-clamp-2 mt-1">{recommendation.description}</p>
+                              <div className="mt-2 flex items-center justify-between">
+                                <button
+                                  className="text-blue-600 text-xs font-medium hover:underline transition duration-150 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                  onClick={() => handleQuickAction(`Tell me about ${recommendation.title}`)}
+                                >
+                                  Learn More
+                                </button>
+                                {recommendation.relevance_score && (
+                                  <span className="text-xs text-gray-500">
+                                    {Math.round(recommendation.relevance_score * 100)}% relevant
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    ) : recommendations.length === 0 ? (
+                      <div className="text-center p-3 text-sm text-gray-500">
+                        {messages.length <= 1 
+                          ? "Start a conversation to get personalized research recommendations"
+                          : "No recommendations available yet"}
+                      </div>
+                    ) : (
+                      <div className="text-center p-3 text-sm text-gray-500">
+                        No {activeRecommendationTag} recommendations found
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

@@ -6,6 +6,7 @@ responses to user queries.
 """
 from typing import Dict, Any, List, Tuple, Optional
 import json
+import logging
 from datetime import datetime
 
 from app.config import settings
@@ -20,289 +21,469 @@ class SynthesisAgent:
     def __init__(self, settings):
         self.settings = settings
         self.llm_client = get_llm_client(settings)
+        self.logger = logging.getLogger(__name__)
     
     async def synthesize(
         self, 
         user_message: str, 
         agent_results: Dict[str, Any],
         conversation_history: List[Dict[str, str]]
-    ) -> Tuple[str, Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
-        Synthesize the results from different agents into a coherent response.
+        Synthesize a comprehensive response from multiple agent results
         
         Args:
-            user_message: The user's original message
-            agent_results: Results from various agents (search, academic, etc.)
-            conversation_history: Previous messages in the conversation
+            user_message: The original user message
+            agent_results: Dictionary of results from different agents
+            conversation_history: List of previous conversation turns
             
         Returns:
-            Tuple containing:
-            - The synthesized response text
-            - Metadata about the synthesis process
+            Dictionary containing the synthesized response and metadata
         """
-        # Extract and format the relevant information from agent results
-        formatted_results = self._format_agent_results(agent_results)
+        self.logger.info("Synthesizing response from agent results")
         
-        # Generate a comprehensive response based on all available information
-        response_content = await self._generate_comprehensive_response(
-            user_message, 
-            formatted_results, 
-            conversation_history
-        )
+        # Extract papers and other relevant information from agent results
+        papers = []
+        web_results = []
+        comparisons = []
+        explanations = []
+        error_messages = []
         
-        # Extract sources and citations from the results
-        sources = self._extract_sources(agent_results)
+        # Process agent results to extract key information
+        for agent_id, result in agent_results.items():
+            # Skip empty results
+            if not result:
+                continue
+                
+            # Extract papers from academic agent results
+            if "papers" in result:
+                # Check if these papers came from a fallback to web search
+                if result.get("used_fallback"):
+                    # Mark these papers specially
+                    for paper in result["papers"]:
+                        if paper.get("source") == "web_search":
+                            web_results.append(paper)
+                        else:
+                            papers.append(paper)
+                else:
+                    papers.extend(result["papers"])
+            
+            # Extract web search results
+            if "results" in result:
+                for item in result["results"]:
+                    if "title" in item and "content" in item:
+                        web_results.append(item)
+            
+            # Extract comparison results
+            if "comparison_summary" in result:
+                comparisons.append(result)
+                
+            # Extract concept explanations
+            if "explanation" in result:
+                explanations.append(result)
+                
+            # Track any errors
+            if "error" in result:
+                error_messages.append(result["error"])
+
+        # Determine information sources for prompt construction
+        has_academic_papers = len(papers) > 0
+        has_web_results = len(web_results) > 0
+        has_comparisons = len(comparisons) > 0
+        has_explanations = len(explanations) > 0
         
-        # Generate metadata about the synthesis process
-        metadata = {
-            "sources": sources,
-            "synthesis_timestamp": datetime.now().isoformat(),
-            "agent_results_summary": self._summarize_agent_results(agent_results)
+        # Track metadata about sources used
+        sources_used = {
+            "academic_papers": has_academic_papers,
+            "web_results": has_web_results,
+            "comparisons": has_comparisons,
+            "explanations": has_explanations,
+            "paper_count": len(papers),
+            "web_result_count": len(web_results)
         }
         
-        return response_content, metadata
-    
-    def _format_agent_results(self, agent_results: Dict[str, Any]) -> str:
-        """
-        Format the results from various agents into a structured text format.
-        """
-        formatted_text = ""
-        
-        # Process search agent results
-        search_results = [r for k, r in agent_results.items() if k.startswith("search_agent")]
-        if search_results:
-            formatted_text += "### Web Search Results\n\n"
-            for i, result in enumerate(search_results):
-                formatted_text += f"Search Query: {result.get('query', 'N/A')}\n\n"
-                
-                for j, item in enumerate(result.get('results', [])[:3]):  # Limit to top 3 results
-                    formatted_text += f"Result {j+1}: {item.get('title', 'No title')}\n"
-                    if 'content' in item:
-                        formatted_text += f"Content: {item['content']}\n"
-                    if 'relevance_assessment' in item:
-                        formatted_text += f"Relevance: {item['relevance_assessment'].get('score', 'N/A')} - {item['relevance_assessment'].get('reason', 'N/A')}\n"
-                    formatted_text += "\n"
-        
-        # Process academic agent results
-        academic_results = [r for k, r in agent_results.items() if k.startswith("academic_agent")]
-        if academic_results:
-            formatted_text += "### Academic Paper Results\n\n"
-            for i, result in enumerate(academic_results):
-                formatted_text += f"Search Query: {result.get('query', 'N/A')}\n\n"
-                
-                for j, paper in enumerate(result.get('results', [])[:3]):  # Limit to top 3 papers
-                    formatted_text += f"Paper {j+1}: {paper.get('title', 'No title')}\n"
-                    formatted_text += f"Authors: {', '.join(paper.get('authors', ['Unknown']))}\n"
-                    formatted_text += f"Abstract: {paper.get('abstract', 'No abstract')[:300]}...\n"
-                    if 'summary' in paper:
-                        formatted_text += f"Summary: {paper['summary']}\n"
-                    if 'relevance_assessment' in paper:
-                        formatted_text += f"Relevance: {paper['relevance_assessment'].get('score', 'N/A')} - {paper['relevance_assessment'].get('reason', 'N/A')}\n"
-                        if 'key_insights' in paper['relevance_assessment']:
-                            formatted_text += "Key Insights:\n"
-                            for insight in paper['relevance_assessment']['key_insights']:
-                                formatted_text += f"- {insight}\n"
-                    formatted_text += "\n"
-        
-        return formatted_text
-    
-    def _extract_sources(self, agent_results: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Extract and format source information from agent results.
-        """
+        # Prepare source tracking for citation
         sources = []
         
-        # Extract web search sources
-        for k, result in agent_results.items():
-            if k.startswith("search_agent") and 'results' in result:
-                for item in result['results']:
-                    if 'title' in item and 'url' in item:
-                        sources.append({
-                            "title": item['title'],
-                            "url": item['url'],
-                            "type": "web",
-                            "relevance": item.get('relevance_assessment', {}).get('score', 0.5) if 'relevance_assessment' in item else 0.5
-                        })
-        
-        # Extract academic paper sources
-        for k, result in agent_results.items():
-            if k.startswith("academic_agent") and 'results' in result:
-                for paper in result['results']:
-                    if 'title' in paper:
-                        # Always include the main link (abstract page)
-                        if 'link' in paper:
-                            sources.append({
-                                "title": paper['title'],
-                                "url": paper['link'],
-                                "authors": paper.get('authors', []),
-                                "published_date": paper.get('published_date'),
-                                "type": "academic",
-                                "arxiv_id": paper.get('arxiv_id'),
-                                "relevance": paper.get('relevance_assessment', {}).get('score', 0.5) if 'relevance_assessment' in paper else 0.5,
-                                "description": paper.get('abstract', '')[:200] + '...' if paper.get('abstract') else None
-                            })
-                        
-                        # Also include the PDF link if available
-                        if 'pdf_link' in paper:
-                            sources.append({
-                                "title": f"[PDF] {paper['title']}",
-                                "url": paper['pdf_link'],
-                                "authors": paper.get('authors', []),
-                                "published_date": paper.get('published_date'),
-                                "type": "academic_pdf",
-                                "arxiv_id": paper.get('arxiv_id'),
-                                "relevance": paper.get('relevance_assessment', {}).get('score', 0.5) if 'relevance_assessment' in paper else 0.5
-                            })
-        
-        # Sort sources by relevance
-        sources.sort(key=lambda x: x.get('relevance', 0), reverse=True)
-        
-        return sources
-    
-    def _summarize_agent_results(self, agent_results: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Create a summary of what each agent found.
-        """
-        summary = {}
-        
-        for key, result in agent_results.items():
-            if key.startswith("search_agent"):
-                summary[key] = {
-                    "query": result.get('query', 'N/A'),
-                    "result_count": len(result.get('results', [])),
-                    "top_result": result.get('results', [{}])[0].get('title', 'None') if result.get('results') else 'None'
+        # Add academic papers as sources
+        if papers:
+            for i, paper in enumerate(papers):
+                source_info = {
+                    "id": f"paper_{i+1}",
+                    "type": "academic",
+                    "title": paper.get("title", "Unknown Title"),
+                    "url": paper.get("url", paper.get("link", "")),
+                    "description": paper.get("abstract", paper.get("summary", "")),
+                    "authors": paper.get("authors", []),
+                    "arxiv_id": paper.get("arxiv_id", ""),
+                    "year": paper.get("year", "Unknown"),
+                    "source_operation": "search_papers"
                 }
-            elif key.startswith("academic_agent"):
-                summary[key] = {
-                    "query": result.get('query', 'N/A'),
-                    "paper_count": len(result.get('results', [])),
-                    "top_paper": result.get('results', [{}])[0].get('title', 'None') if result.get('results') else 'None'
-                }
+                sources.append(source_info)
         
-        return summary
+        # Add web results as sources
+        if web_results:
+            for i, result in enumerate(web_results):
+                source_info = {
+                    "id": f"web_{i+1}",
+                    "type": "web",
+                    "title": result.get("title", "Unknown Title"),
+                    "url": result.get("url", result.get("link", "")),
+                    "description": result.get("content", result.get("summary", "")),
+                    "source_operation": "search_web"
+                }
+                sources.append(source_info)
+        
+        # Build a structured representation of all collected information
+        collected_info = {
+            "papers": [self._extract_paper_data(paper) for paper in papers],
+            "web_results": [self._extract_web_result(result) for result in web_results],
+            "comparisons": comparisons,
+            "explanations": explanations,
+            "errors": error_messages if error_messages else None
+        }
+        
+        # Build the system prompt based on available information
+        prompt = self._build_synthesis_prompt(user_message, collected_info, conversation_history)
+        
+        # Generate the response
+        try:
+            response = await get_completion(
+                self.llm_client,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_message}
+                ]
+            )
+            
+            # Post-process the response to fix markdown table formatting
+            processed_response = self._fix_markdown_tables(response)
+            
+            return {
+                "response": processed_response,
+                "sources_used": sources_used,
+                "sources": sources,  # Add explicit sources list
+                "source_count": len(sources),  # Add count for frontend display
+                "citation_count": len(papers) + len(web_results),
+                "model": self.settings.PRIMARY_LLM
+            }
+        except Exception as e:
+            self.logger.error(f"Error in synthesis: {str(e)}")
+            return {
+                "response": f"I encountered an error while synthesizing the research information: {str(e)}",
+                "sources_used": sources_used,
+                "sources": sources,  # Include sources even in error case
+                "source_count": len(sources),
+                "error": str(e)
+            }
     
-    async def _generate_comprehensive_response(
+    def _extract_paper_data(self, paper: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract standardized data from a paper object"""
+        return {
+            "title": paper.get("title", "Unknown Title"),
+            "authors": paper.get("authors", []),
+            "summary": paper.get("summary", paper.get("abstract", "")),
+            "year": paper.get("year", "Unknown"),
+            "url": paper.get("url", paper.get("link", "")),
+            "source": paper.get("source", "academic"),
+            "key_insights": paper.get("relevance_assessment", {}).get("key_insights", [])
+        }
+        
+    def _extract_web_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract standardized data from a web search result"""
+        return {
+            "title": result.get("title", "Unknown Title"),
+            "content": result.get("content", result.get("summary", "")),
+            "url": result.get("url", ""),
+            "source": "web",
+            "relevance": result.get("relevance_assessment", {}).get("score", result.get("score", 0.5))
+        }
+    
+    def _build_synthesis_prompt(
         self, 
         user_message: str, 
-        formatted_results: str, 
+        collected_info: Dict[str, Any],
         conversation_history: List[Dict[str, str]]
     ) -> str:
         """
-        Generate a comprehensive response based on all available information.
+        Build a detailed prompt for response synthesis based on available information
         """
-        # Extract recent conversation context (limit to 5 most recent messages)
-        recent_messages = conversation_history[-5:] if len(conversation_history) > 0 else []
-        recent_context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_messages])
+        papers = collected_info["papers"]
+        web_results = collected_info["web_results"]
+        comparisons = collected_info["comparisons"]
+        explanations = collected_info["explanations"]
+        errors = collected_info["errors"]
         
-        # Analyze type of request to tailor the response approach
-        is_academic_analysis = any(term in user_message.lower() for term in 
-                               ['analyze', 'analysis', 'evaluate', 'review', 'critique', 'summarize', 'summary'])
-        is_comparison = any(term in user_message.lower() for term in 
-                           ['compare', 'contrast', 'versus', 'vs', 'difference', 'similarities'])
+        # Start with the base prompt
+        prompt = f"""You are an academic research assistant helping with the following query:
+
+"{user_message}"
+
+Your task is to synthesize a comprehensive, accurate response using the information provided.
+"""
+
+        # Add context about available information sources
+        source_context = []
+        if papers:
+            source_context.append(f"{len(papers)} academic papers")
+        if web_results:
+            source_context.append(f"{len(web_results)} web search results")
+        if comparisons:
+            source_context.append(f"{len(comparisons)} comparative analyses")
+        if explanations:
+            source_context.append(f"{len(explanations)} concept explanations")
+            
+        if source_context:
+            prompt += f"\nThe following information has been collected: {', '.join(source_context)}.\n"
+            
+            # Add a note about fallback search if applicable
+            if len(papers) == 0 and len(web_results) > 0:
+                prompt += "\nNOTE: No academic papers were found, so web search was used as a fallback to provide information.\n"
         
-        # Determine if sources were found
-        has_sources = "Paper" in formatted_results or "Result" in formatted_results
+        # Add papers section if available
+        if papers:
+            prompt += "\n## ACADEMIC PAPERS\n"
+            for i, paper in enumerate(papers[:10]):  # Limit to 10 papers to avoid context overflow
+                prompt += f"\nPAPER {i+1}:\n"
+                prompt += f"Title: {paper['title']}\n"
+                if paper.get("authors"):
+                    prompt += f"Authors: {', '.join(paper['authors'][:3])}{' et al.' if len(paper['authors']) > 3 else ''}\n"
+                if paper.get("year"):
+                    prompt += f"Year: {paper['year']}\n"
+                if paper.get("url"):
+                    prompt += f"URL: {paper['url']}\n"
+                prompt += f"Summary: {paper['summary'][:500]}...\n"
+                if paper.get("key_insights"):
+                    prompt += "Key insights:\n"
+                    for j, insight in enumerate(paper['key_insights'][:5]):  # Limit to 5 insights
+                        prompt += f"- {insight}\n"
         
-        # Handle academic analysis requests (papers, studies, research)
-        if is_academic_analysis or is_comparison:
-            prompt = f"""
-            You are an expert academic research analyst providing detailed analysis of scholarly works.
-            
-            USER'S REQUEST: {user_message}
-            
-            RECENT CONVERSATION CONTEXT:
-            {recent_context}
-            
-            RELEVANT RESEARCH PAPERS AND SOURCES:
-            {formatted_results}
-            
-            CRITICAL INSTRUCTION: You MUST ONLY use and cite the papers and sources found in the search results above.
-            DO NOT cite papers or sources that aren't in the search results.
-            
-            Based on the available research papers and sources, provide the analysis requested by the user.
-            
-            IMPORTANT INSTRUCTIONS:
-            
-            1. If relevant papers were found in the search results, analyze those papers
-               in detail to answer the user's question. Prioritize seminal or foundational papers in the field.
-            
-            2. If no relevant papers were found for the specific topic, clearly state this limitation and note that
-               you can only analyze based on the available papers.
-               
-            3. When conducting academic analysis:
-               - Compare and contrast methodologies when appropriate
-               - Examine training or experimental approaches
-               - Analyze performance differences and metrics
-               - Discuss strengths and limitations
-               - Consider implications and applications
-            
-            4. Structure your response with appropriate academic analysis sections.
-            
-            5. MOST IMPORTANT: YOU MUST ALWAYS CITE SOURCES PROPERLY. Every major claim should be supported by a citation
-               to one of the papers from the search results. Format citations as links to the paper URLs, like this:
-               [Paper Title](paper_url)
-            
-            FORMAT GUIDELINES:
-            1. Start with a main heading (using # syntax) that summarizes the topic
-            2. Use proper subheadings (using ## syntax) for different sections
-            3. Use bullet points (using * or - syntax) for listing key points
-            4. ALWAYS provide a "Sources Used" section at the end listing all papers you referenced
-            
-            Remember: If you have no sources from the search results, acknowledge this limitation and only provide
-            general information while stating the need for specific research papers for a more detailed analysis.
-            """
-        else:
-            # General prompt for other types of queries
-            prompt = f"""
-            You are a helpful research assistant providing information based on search results and academic papers.
-            
-            USER'S QUESTION: {user_message}
-            
-            RECENT CONVERSATION CONTEXT:
-            {recent_context}
-            
-            INFORMATION FROM VARIOUS SOURCES:
-            {formatted_results}
-            
-            CRITICAL INSTRUCTION: You MUST ONLY use and cite the papers and sources found in the search results above.
-            DO NOT cite papers or sources that aren't in the search results.
-            
-            Based on the above information, provide a comprehensive, well-structured response to the user's question.
-            
-            IMPORTANT: You MUST format your response using the following structure:
-            1. Start with a main heading (using # syntax) that summarizes the topic
-            2. Add relevant subheadings (using ## syntax) to organize different aspects or sections
-            3. Use bullet points (using * or - syntax) for listing items, features, or key points
-            4. Include direct links to sources when citing specific information
-            5. ALWAYS include a "Sources Used" section at the end
-            
-            Make sure to:
-            1. Directly address the user's specific question and intent
-            2. ONLY synthesize information from the sources provided
-            3. Cite sources when providing specific information using formats like: [Source Title](URL)
-            4. Structure your response logically with clear sections
-            5. Acknowledge limitations or gaps in the available information
-            6. Use an authoritative but conversational tone
-            
-            If the search results don't provide relevant information to answer the question, CLEARLY STATE THIS
-            at the beginning of your response, and then provide only general information while acknowledging
-            the limitations.
-            """
+        # Add web results if available
+        if web_results:
+            prompt += "\n## WEB SEARCH RESULTS\n"
+            if len(papers) == 0:
+                prompt += "(Used as fallback since no academic papers were found)\n"
+            for i, result in enumerate(web_results[:10]):  # Limit to 10 results
+                prompt += f"\nRESULT {i+1}:\n"
+                prompt += f"Title: {result['title']}\n"
+                if result.get("url"):
+                    prompt += f"URL: {result['url']}\n"
+                prompt += f"Content: {result['content'][:500]}...\n"
         
-        # Generate the response
-        response = await get_completion(
-            self.llm_client,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_message}
-            ]
-        )
+        # Add comparison results if available
+        if comparisons:
+            prompt += "\n## COMPARATIVE ANALYSES\n"
+            for i, comparison in enumerate(comparisons):
+                prompt += f"\nCOMPARISON {i+1}:\n"
+                if "comparison_summary" in comparison:
+                    prompt += f"Summary: {comparison['comparison_summary'][:1000]}...\n"
+                if "method_descriptions" in comparison:
+                    prompt += "Method descriptions:\n"
+                    for method, desc in comparison["method_descriptions"].items():
+                        prompt += f"- {method}: {str(desc)[:300]}...\n"
+                if "key_differences" in comparison and isinstance(comparison["key_differences"], list):
+                    prompt += "Key differences:\n"
+                    for diff in comparison["key_differences"][:5]:  # Limit to 5 differences
+                        prompt += f"- {diff}\n"
         
-        # Check if the response includes any source citations
-        has_citation_links = '[' in response and '](' in response
+        # Add explanations if available
+        if explanations:
+            prompt += "\n## CONCEPT EXPLANATIONS\n"
+            for i, explanation in enumerate(explanations):
+                prompt += f"\nEXPLANATION {i+1}:\n"
+                if "explanation" in explanation:
+                    prompt += f"{explanation['explanation'][:1000]}...\n"
         
-        # Add source usage note if relevant sources were found but no citations were included
-        if has_sources and not has_citation_links and formatted_results.strip():
-            response += "\n\n---\n**Note:** This response was generated based on academic sources, but specific citations couldn't be formatted properly."
+        # Add info about errors if any occurred
+        if errors:
+            prompt += "\n## SEARCH LIMITATIONS\n"
+            prompt += "Note: Some information sources had issues:\n"
+            for error in errors[:3]:  # Limit to first 3 errors
+                prompt += f"- {error}\n"
+            
+        # Add instructions for synthesis
+        prompt += """
+## RESPONSE GUIDELINES
+
+1. Synthesize a comprehensive response that directly addresses the user's query
+2. Use the most relevant information from the provided sources
+3. Combine academic and web-based information appropriately
+4. Clearly identify any areas where information is limited or unavailable
+5. Use an academic, informative style with precise terminology
+6. Structure the response with clear sections and logical flow
+7. If relevant to the query, include a proper markdown comparison table that looks like this:
+
+```
+| Feature | Option A | Option B |
+|---------|----------|----------|
+| Feature 1 | Value A1 | Value B1 |
+| Feature 2 | Value A2 | Value B2 |
+```
+
+IMPORTANT: When formatting comparison tables, ensure they render correctly:
+- Each row MUST be on its own line - do not put the entire table on a single line
+- Begin and end each line with a vertical bar (|)
+- Ensure the header separator row (|---|---|---|) is on its own line
+- Align columns consistently for readability
+- Make sure each row has the same number of columns
+- Avoid using | characters within cell text as they break table formatting
+- Add an empty line before and after the table
+
+8. When citing sources, use the following format: 
+   - For academic papers: [Source: "Title"]
+   - For web results: [Source: "Title"]
+   - Make sure to cite sources consistently throughout your response
+   - DO NOT use placeholder citations like [Unknown agent]
+
+9. When comparing research methods or topics, clearly highlight key similarities and differences
+
+Your response should be thorough yet concise, focused on addressing the user's specific query.
+Use objective, evidence-based language and avoid speculation where information is limited.
+"""
+
+        return prompt
+    
+    def _fix_markdown_tables(self, text: str) -> str:
+        """
+        Ensure markdown tables have proper line breaks and formatting.
         
-        return response
+        Args:
+            text: The original response text
+            
+        Returns:
+            Text with properly formatted markdown tables
+        """
+        import re
+        
+        # First check if the text already contains properly formatted tables with newlines
+        if re.search(r'\|\s*\n\s*\|', text):
+            # If so, no need for extensive processing
+            return text
+        
+        # Find markdown table patterns
+        # This pattern looks for sequences starting with | and containing multiple | characters
+        # that might represent a table
+        table_pattern = r'(\|[^\n]+\|[^\n]+\|[^\n]*)'
+        
+        # Function to process each found table
+        def process_table(match):
+            table_text = match.group(0)
+            
+            # Skip if it already has newlines
+            if '\n' in table_text:
+                return table_text
+                
+            # Split the table into rows by detecting complete row patterns
+            # A row starts with | and ends with | with content in between
+            row_pattern = r'\|[^|]*(?:\|[^|]*)+\|'
+            rows = re.findall(row_pattern, table_text)
+            
+            if not rows or len(rows) < 2:
+                # Not enough rows for a proper table
+                return table_text
+            
+            # Check if we have a proper table structure (header + separator + data rows)
+            header_row = rows[0]
+            
+            # Try to identify or create a separator row
+            separator_row = ""
+            if len(rows) > 1:
+                if re.match(r'\|[\s-:|]+\|', rows[1]):
+                    # Second row looks like a separator
+                    separator_row = rows[1]
+                else:
+                    # Create a separator row based on the header
+                    columns = header_row.count('|') - 1
+                    separator_row = '|' + '---|' * columns
+            else:
+                # Create a separator row based on the header
+                columns = header_row.count('|') - 1
+                separator_row = '|' + '---|' * columns
+            
+            # Reconstruct the table with proper formatting
+            if len(rows) <= 2:
+                # Only header row found, create a minimal table
+                formatted_table = header_row + '\n' + separator_row
+            else:
+                data_rows = rows[1:] if not re.match(r'\|[\s-:|]+\|', rows[1]) else rows[2:]
+                formatted_table = header_row + '\n' + separator_row + '\n' + '\n'.join(data_rows)
+            
+            # Ensure the table has proper spacing
+            return '\n\n' + formatted_table + '\n\n'
+        
+        # Replace all tables in the text
+        processed_text = re.sub(table_pattern, process_table, text)
+        
+        # If the text contains table-like content but our regex didn't match properly,
+        # try a more aggressive approach with a single pass through the text
+        if '|' in processed_text and not re.search(r'\|\s*\n\s*\|', processed_text):
+            lines = processed_text.split('\n')
+            table_lines = []
+            in_table = False
+            result_lines = []
+            
+            for line in lines:
+                # Detect potential table lines (containing multiple | characters)
+                if line.count('|') >= 2:
+                    if not in_table:
+                        in_table = True
+                        # Add an empty line before table if not already there
+                        if result_lines and result_lines[-1]:
+                            result_lines.append('')
+                    table_lines.append(line)
+                else:
+                    if in_table:
+                        # Process the collected table lines
+                        if len(table_lines) >= 1:
+                            # Add header row
+                            result_lines.append(table_lines[0])
+                            
+                            # Check if there's a separator row, add one if not
+                            if len(table_lines) > 1 and re.match(r'^\s*\|[\s-:|]+\|\s*$', table_lines[1]):
+                                result_lines.append(table_lines[1])
+                            else:
+                                # Create a separator row
+                                columns = table_lines[0].count('|') - 1
+                                result_lines.append('|' + '---|' * columns)
+                            
+                            # Add remaining rows
+                            if len(table_lines) > 1:
+                                start_idx = 2 if re.match(r'^\s*\|[\s-:|]+\|\s*$', table_lines[1]) else 1
+                                for table_line in table_lines[start_idx:]:
+                                    result_lines.append(table_line)
+                            
+                            # Add an empty line after the table
+                            result_lines.append('')
+                        
+                        table_lines = []
+                        in_table = False
+                    
+                    result_lines.append(line)
+            
+            # Handle case where table is at the end of the text
+            if in_table and table_lines:
+                # Process the collected table lines
+                if len(table_lines) >= 1:
+                    # Add header row
+                    result_lines.append(table_lines[0])
+                    
+                    # Check if there's a separator row, add one if not
+                    if len(table_lines) > 1 and re.match(r'^\s*\|[\s-:|]+\|\s*$', table_lines[1]):
+                        result_lines.append(table_lines[1])
+                    else:
+                        # Create a separator row
+                        columns = table_lines[0].count('|') - 1
+                        result_lines.append('|' + '---|' * columns)
+                    
+                    # Add remaining rows
+                    if len(table_lines) > 1:
+                        start_idx = 2 if re.match(r'^\s*\|[\s-:|]+\|\s*$', table_lines[1]) else 1
+                        for table_line in table_lines[start_idx:]:
+                            result_lines.append(table_line)
+                    
+                    # Add an empty line after the table
+                    result_lines.append('')
+            
+            processed_text = '\n'.join(result_lines)
+        
+        return processed_text
