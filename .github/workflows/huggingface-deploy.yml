@@ -41,20 +41,68 @@ jobs:
             cd ..
           fi
       
-      - name: Copy Docker Configuration Files
+      - name: Create HF Space Configuration Files
         run: |
           # Copy docker/huggingface-space.yaml as README.md
           cp docker/huggingface-space.yaml repo/README.md
           
-          # Create Dockerfile that pulls from DockerHub
+          # Create custom entrypoint script for Hugging Face Spaces
+          cat > repo/hf-entrypoint.sh << EOL
+          #!/bin/bash
+          set -e
+
+          # Create supervisord configuration in a writable directory
+          mkdir -p /tmp/supervisor
+          
+          # Create a modified supervisord.conf for HF Spaces
+          cat > /tmp/supervisor/supervisord.conf << EOSUPERVISOR
+          [supervisord]
+          nodaemon=true
+          logfile=/tmp/supervisord.log
+          logfile_maxbytes=50MB
+          loglevel=info
+
+          [program:backend]
+          command=uvicorn app.main:app --host 0.0.0.0 --port 7860
+          directory=/app
+          autostart=true
+          autorestart=true
+          stdout_logfile=/dev/stdout
+          stdout_logfile_maxbytes=0
+          stderr_logfile=/dev/stderr
+          stderr_logfile_maxbytes=0
+          environment=PYTHONUNBUFFERED=1
+
+          [program:frontend]
+          command=serve -s frontend/build -l 3000
+          directory=/app
+          autostart=true
+          autorestart=true
+          stdout_logfile=/dev/stdout
+          stdout_logfile_maxbytes=0
+          stderr_logfile=/dev/stderr
+          stderr_logfile_maxbytes=0
+          EOSUPERVISOR
+          
+          echo "Starting supervisord with configuration in /tmp/supervisor"
+          exec /usr/bin/supervisord -c /tmp/supervisor/supervisord.conf
+          EOL
+          
+          # Make the entrypoint script executable
+          chmod +x repo/hf-entrypoint.sh
+          
+          # Create Dockerfile that pulls from DockerHub and uses our custom entrypoint
           cat > repo/Dockerfile << EOL
           FROM ${{ secrets.DOCKERHUB_USERNAME }}/genai-research-assistant:latest
           
-          # No changes needed - the base image already contains all necessary setup
-          # This is just a wrapper to pull from DockerHub
+          # Copy the HF-specific entrypoint script
+          COPY hf-entrypoint.sh /hf-entrypoint.sh
           
           # Expose the port Hugging Face will use
           EXPOSE 7860
+          
+          # Use our HF-specific entrypoint
+          ENTRYPOINT ["/hf-entrypoint.sh"]
           EOL
       
       - name: Push to Hugging Face Space

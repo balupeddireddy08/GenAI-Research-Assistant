@@ -54,8 +54,18 @@ Triggered by:
 Actions performed:
 1. Clones your Hugging Face Space repository
 2. Creates/updates Dockerfile that references your DockerHub image
-3. Updates configuration files
+3. Creates a custom entrypoint script for Hugging Face Spaces
 4. Pushes changes to Hugging Face Space
+
+## Hugging Face Spaces Considerations
+
+Hugging Face Spaces has certain constraints that our deployment addresses:
+
+1. **Permission Restrictions**: The standard container may not have write access to system directories. Our CD workflow creates a custom entrypoint script that writes configuration to `/tmp` instead of system directories.
+
+2. **Port Requirements**: Hugging Face Spaces expects the application to listen on port 7860. Our configuration automatically routes the backend to this port.
+
+3. **Single Container Requirement**: Hugging Face Spaces only supports single container deployments. Our setup combines frontend and backend in one container using supervisord.
 
 ## Environment Variables
 
@@ -71,13 +81,23 @@ After deployment to Hugging Face Spaces, set the following environment variables
 ### Common Issues
 
 1. **Docker build fails**: Check the GitHub Actions logs for specific error messages
-2. **Hugging Face deployment fails**: Ensure your HF_TOKEN has write permissions
-3. **Application starts but doesn't work**: Verify environment variables are set correctly
+
+2. **Hugging Face deployment fails**: 
+   - Ensure your HF_TOKEN has write permissions
+   - Check if the Space is already running - you may need to stop it before redeploying
+
+3. **Permission denied errors**:
+   - These are handled by our custom entrypoint script that uses writable directories
+   - If you see new permission errors, you may need to further modify the entrypoint script
+
+4. **Application starts but doesn't work**: 
+   - Verify environment variables are set correctly in Hugging Face Space settings
+   - Check the application logs in the Space settings
 
 ### Logs
 
 - View GitHub Actions logs in the "Actions" tab of your repository
-- View Hugging Face Space logs in the Space settings
+- View Hugging Face Space logs in the Space settings under the "Logs" tab
 
 ## Manual Deployment
 
