@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Send, Lightbulb, History, X, Copy, StopCircle, RefreshCw } from 'lucide-react';
-import { sendChatMessage, getConversationHistory, getConversation } from './utils/api';
+import { sendChatMessage, getConversationHistory, getConversation, fixConversationTimestamps } from './utils/api';
 
 function App() {
   const [messages, setMessages] = useState([]);
@@ -139,7 +139,11 @@ function App() {
     const now = new Date();
     
     return [...conversations].sort((a, b) => {
-      // Temporary (in-progress) conversations always come first
+      // Current active conversation always comes first
+      if (a.id === currentConversationId && b.id !== currentConversationId) return -1;
+      if (a.id !== currentConversationId && b.id === currentConversationId) return 1;
+      
+      // Temporary (in-progress) conversations come next
       if (a.isTemp && !b.isTemp) return -1;
       if (!a.isTemp && b.isTemp) return 1;
       
@@ -168,7 +172,7 @@ function App() {
           dateB = new Date(0);
         }
         
-        // Sort newest first
+        // Sort newest first (always descending order)
         return dateB - dateA;
       } catch (err) {
         console.error("Error comparing dates:", err);
@@ -279,10 +283,29 @@ function App() {
   };
 
   // Update the refreshHistory function to use the new sorting helper
-  const refreshHistory = async () => {
+  const refreshHistory = async (fixTimestamps = false) => {
     try {
       setIsLoadingHistory(true);
       console.log("Refreshing conversation history...");
+      
+      // Fix timestamps if requested (or if there was a previous issue)
+      if (fixTimestamps) {
+        try {
+          const result = await fixConversationTimestamps();
+          console.log("Fixed timestamps result:", result);
+          // Show a brief success message
+          setErrorMessage(`Success: ${result.message}`);
+          // Clear the success message after 3 seconds
+          setTimeout(() => {
+            if (errorMessage && errorMessage.startsWith('Success:')) {
+              setErrorMessage(null);
+            }
+          }, 3000);
+        } catch (error) {
+          console.error("Error fixing timestamps:", error);
+          // Don't show error to avoid disrupting main flow
+        }
+      }
       
       // Save existing displayTitles and temporary conversations to reapply them after refresh
       const existingDisplayTitles = {};
@@ -297,6 +320,7 @@ function App() {
         }
       });
       
+      // Force cache-busting by adding timestamp to the URL
       const history = await getConversationHistory();
       console.log("Updated conversation history:", history);
       
@@ -703,7 +727,7 @@ function App() {
 
       console.log(`Loaded ${fullConversation.messages.length} messages from conversation history`);
 
-      // Refresh history to make sure it's up to date
+      // Force refresh history immediately to get updated timestamps
       await refreshHistory();
 
       // Auto-scroll to the last message after a short delay
@@ -797,32 +821,84 @@ function App() {
     const isActive = conv.id === currentConversationId || 
                     (conv.isTemp && currentConversationId?.startsWith('temp-'));
     
-    // Make sure we have valid dates by providing fallbacks
-    const now = new Date();
-    let updatedDate;
-    try {
-      // First try to get a valid date from updated_at or created_at
-      const potentialUpdatedDate = conv.updated_at && !isNaN(new Date(conv.updated_at).getTime()) 
-        ? new Date(conv.updated_at) 
-        : conv.created_at && !isNaN(new Date(conv.created_at).getTime())
-          ? new Date(conv.created_at)
-          : new Date();
-      
-      // If the date is in the future, use current date instead
-      updatedDate = potentialUpdatedDate > now ? now : potentialUpdatedDate;
-    } catch (error) {
-      console.error("Error parsing date for conversation display:", error);
-      updatedDate = new Date();
+    // Get the conversation timestamp (prefer updated_at over created_at)
+    let timestamp = null;
+    if (conv.updated_at) {
+      try {
+        timestamp = new Date(conv.updated_at);
+        // Validate timestamp - if invalid or future date, try created_at
+        if (isNaN(timestamp.getTime()) || timestamp > new Date()) {
+          timestamp = null;
+        }
+      } catch (e) {
+        timestamp = null;
+      }
+    }
+    
+    // If updated_at wasn't valid, try created_at
+    if (!timestamp && conv.created_at) {
+      try {
+        timestamp = new Date(conv.created_at);
+        // Validate timestamp - if invalid or future date, use current date
+        if (isNaN(timestamp.getTime()) || timestamp > new Date()) {
+          timestamp = null;
+        }
+      } catch (e) {
+        timestamp = null;
+      }
+    }
+    
+    // If no valid timestamp was found, use current date only for display
+    if (!timestamp) {
+      timestamp = new Date();
     }
     
     // Check if this is today's conversation
-    const isToday = conv.isToday || new Date().toDateString() === updatedDate.toDateString();
+    const now = new Date();
+    const isToday = timestamp.toDateString() === now.toDateString();
     
-    // Format the date differently if it's today
-    const formattedDate = isToday
-      ? 'Today, ' + updatedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : updatedDate.toLocaleDateString() + ' ' + 
-        updatedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // Format different date displays
+    let formattedDate;
+    
+    if (isToday) {
+      // For today's conversations, show "Today, HH:MM AM/PM"
+      formattedDate = 'Today, ' + timestamp.toLocaleTimeString([], { 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
+    } else {
+      // Check if it's yesterday
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const isYesterday = timestamp.toDateString() === yesterday.toDateString();
+      
+      if (isYesterday) {
+        // For yesterday's conversations, show "Yesterday, HH:MM AM/PM"
+        formattedDate = 'Yesterday, ' + timestamp.toLocaleTimeString([], { 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        });
+      } else if (timestamp.getFullYear() === now.getFullYear()) {
+        // For same year but not today/yesterday, show "Mon DD, HH:MM AM/PM"
+        formattedDate = timestamp.toLocaleDateString([], {
+          month: 'short',
+          day: 'numeric'
+        }) + ', ' + timestamp.toLocaleTimeString([], { 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        });
+      } else {
+        // For previous years, show "Mon DD YYYY, HH:MM AM/PM"
+        formattedDate = timestamp.toLocaleDateString([], {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric'
+        }) + ', ' + timestamp.toLocaleTimeString([], { 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        });
+      }
+    }
     
     // Use displayTitle if available, otherwise use the original title
     // If both are missing or low quality, use a placeholder
@@ -855,7 +931,7 @@ function App() {
           </span>
         </p>
         <div className="flex justify-between items-center mt-1">
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-500 font-medium">
             {formattedDate}
           </p>
           {conv.message_count && (
@@ -998,6 +1074,9 @@ function App() {
         // Handle inline code (`code`)
         .replace(/`([^`]+)`/g, '<code class="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-sm">$1</code>');
       
+      // Add markdown table formatting support
+      processedContent = processTableMarkdown(processedContent);
+      
       // Better paragraph handling - split by double newlines but preserve lists
       const paragraphs = [];
       let currentParagraph = '';
@@ -1033,9 +1112,9 @@ function App() {
         if (para.includes('<li class="ml-5 text-gray-700 mb-1 list-disc">')) {
           return `<ul class="my-2 list-disc pl-5">${para}</ul>`;
         }
-        // Skip wrapping already processed elements (headings, code blocks, etc.)
+        // Skip wrapping already processed elements (headings, code blocks, tables, etc.)
         else if (para.startsWith('<h1') || para.startsWith('<h2') || para.startsWith('<h3') || 
-                para.startsWith('<pre') || para.startsWith('<ul')) {
+                para.startsWith('<pre') || para.startsWith('<ul') || para.startsWith('<table')) {
           return para;
         }
         // Regular paragraph
@@ -1061,6 +1140,92 @@ function App() {
       return <p style={{ whiteSpace: 'pre-wrap' }}>{content}</p>;
     }
   };
+  
+  // Add a helper function to process markdown tables
+  const processTableMarkdown = (content) => {
+    // Split content by lines to process tables
+    const lines = content.split('\n');
+    let inTable = false;
+    let tableContent = [];
+    let processedLines = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmedLine = line.trim();
+      
+      // Check if this is a table row (starts with |)
+      if (trimmedLine.startsWith('|') && trimmedLine.endsWith('|')) {
+        if (!inTable) {
+          // This is the start of a new table
+          inTable = true;
+          tableContent = [];
+        }
+        tableContent.push(line);
+      } else if (inTable) {
+        // We were in a table but this line is not a table row
+        // Process the collected table
+        processedLines.push(convertTableToHtml(tableContent));
+        inTable = false;
+        tableContent = [];
+        
+        // Don't forget to add the current non-table line
+        processedLines.push(line);
+      } else {
+        // Regular line, not in a table
+        processedLines.push(line);
+      }
+    }
+    
+    // Check if we were still processing a table at the end
+    if (inTable && tableContent.length > 0) {
+      processedLines.push(convertTableToHtml(tableContent));
+    }
+    
+    return processedLines.join('\n');
+  };
+  
+  // Function to convert markdown table to HTML
+  const convertTableToHtml = (tableLines) => {
+    if (tableLines.length < 3) {
+      // A valid table should have at least header, separator, and one data row
+      return tableLines.join('\n');
+    }
+    
+    // Process the table header
+    const headerRow = tableLines[0];
+    const headerCells = headerRow
+      .trim()
+      .split('|')
+      .filter(cell => cell.trim() !== '') // Remove empty cells from start/end
+      .map(cell => `<th class="border border-gray-300 px-4 py-2 bg-gray-100 font-medium">${cell.trim()}</th>`)
+      .join('');
+    
+    // Skip the separator row (index 1)
+    
+    // Process the data rows
+    const dataRows = tableLines.slice(2).map(row => {
+      const cells = row
+        .trim()
+        .split('|')
+        .filter(cell => cell.trim() !== '')
+        .map(cell => `<td class="border border-gray-300 px-4 py-2">${cell.trim()}</td>`)
+        .join('');
+      
+      return `<tr>${cells}</tr>`;
+    }).join('');
+    
+    // Create the final table HTML
+    return `<div class="overflow-x-auto my-4">
+      <table class="min-w-full border-collapse border border-gray-300 rounded-lg">
+        <thead>
+          <tr>${headerCells}</tr>
+        </thead>
+        <tbody>
+          ${dataRows}
+        </tbody>
+      </table>
+    </div>`;
+  };
 
   // Add this function to filter recommendations by tag
   const filterRecommendationsByTag = (tag) => {
@@ -1080,6 +1245,36 @@ function App() {
     return recommendations.filter(rec => 
       rec.type && rec.type.toLowerCase() === activeRecommendationTag.toLowerCase()
     );
+  };
+
+  // Add this function to the App component
+  const handleFixTimestamps = async () => {
+    try {
+      setIsLoadingHistory(true);
+      
+      // Call the API to fix timestamps
+      const result = await fixConversationTimestamps();
+      console.log("Fixed timestamps result:", result);
+      
+      // Show a notification (could be enhanced with a toast)
+      setErrorMessage(`Success: ${result.message}`);
+      
+      // Refresh the history to show the new timestamps
+      await refreshHistory();
+      
+      // Clear the success message after 3 seconds
+      setTimeout(() => {
+        if (errorMessage && errorMessage.startsWith('Success:')) {
+          setErrorMessage(null);
+        }
+      }, 3000);
+      
+    } catch (error) {
+      console.error("Error fixing timestamps:", error);
+      setErrorMessage(`Failed to fix timestamps: ${error.message}`);
+    } finally {
+      setIsLoadingHistory(false);
+    }
   };
 
   return (
@@ -1399,23 +1594,26 @@ function App() {
             >
               <div className="flex flex-col h-full">
                 {/* Sidebar header with refresh button */}
-                <div className="flex justify-between items-center p-4 border-b border-gray-200">
-                  <div className="flex items-center">
-                    <h2 className="text-lg font-medium text-gray-700">Conversations</h2>
-                    <span className="ml-2 text-xs text-gray-500">
-                      {isLoadingHistory ? '(Loading...)' : `(${chatHistory.length})`}
-                    </span>
+                <div className="flex flex-col p-4 border-b border-gray-200">
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center">
+                      <h2 className="text-lg font-medium text-gray-700">Conversations</h2>
+                      <span className="ml-2 text-xs text-gray-500">
+                        {isLoadingHistory ? '(Loading...)' : `(${chatHistory.length})`}
+                      </span>
+                    </div>
+                    <button 
+                      onClick={() => refreshHistory(true)}
+                      className={`flex items-center text-blue-600 hover:text-blue-800 focus:outline-none px-2 py-1 rounded hover:bg-blue-50 ${
+                        isLoadingHistory ? 'opacity-70' : ''
+                      }`}
+                      title="Refresh conversation history and fix timestamps"
+                      disabled={isLoadingHistory}
+                    >
+                      <RefreshCw size={14} className={isLoadingHistory ? 'animate-spin mr-1' : 'mr-1'} />
+                      <span className="text-xs font-medium">Refresh</span>
+                    </button>
                   </div>
-                  <button 
-                    onClick={() => refreshHistory()}
-                    className={`text-blue-600 hover:text-blue-800 focus:outline-none p-1 rounded hover:bg-blue-50 ${
-                      isLoadingHistory ? 'animate-spin' : ''
-                    }`}
-                    title="Refresh conversation history"
-                    disabled={isLoadingHistory}
-                  >
-                    <RefreshCw size={16} />
-                  </button>
                 </div>
                 
                 <div className="p-4 border-b border-gray-200">
@@ -1518,7 +1716,10 @@ function App() {
             <div className="flex-1 flex flex-col bg-gray-100 overflow-hidden">
               {/* Error Message */}
               {errorMessage && (
-                <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-3 mx-4 mt-2 shadow-sm">
+                <div className={`${errorMessage.startsWith('Success:') 
+                  ? 'bg-green-100 border-l-4 border-green-500 text-green-700' 
+                  : 'bg-red-100 border-l-4 border-red-500 text-red-700'} 
+                  p-3 mx-4 mt-2 shadow-sm`}>
                   <p className="text-sm">{errorMessage}</p>
                 </div>
               )}

@@ -10,6 +10,8 @@ from typing import Optional, List
 import uuid
 import logging
 from pydantic import BaseModel
+import datetime
+import random
 
 from app.database import get_db
 from app.schemas.conversation import ChatRequest, ChatResponse, ConversationCreate, ConversationResponse
@@ -90,9 +92,16 @@ async def chat(
         
         # Update conversation timestamp
         logger.info("Updating conversation timestamp")
+        # Make sure each conversation gets a unique timestamp
+        # First, get the current timestamp
+        now = datetime.datetime.now()
+        # Add a small random offset to ensure uniqueness (1-1000 milliseconds)
+        random_ms = random.randint(1, 1000)
+        unique_now = now + datetime.timedelta(milliseconds=random_ms)
+        
         await db.execute(
-            text("UPDATE conversations SET updated_at = NOW() WHERE id = :id"),
-            {"id": conversation_id}
+            text("UPDATE conversations SET updated_at = :updated_at WHERE id = :id"),
+            {"updated_at": unique_now.isoformat(), "id": conversation_id}
         )
         
         # Extract metadata components

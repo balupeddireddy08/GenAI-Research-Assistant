@@ -7,7 +7,9 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.ext.asyncio import AsyncEngine
 import logging
 import os
+import tempfile
 from typing import AsyncGenerator
+from app.utils.db_fallback import get_available_database_url, SQLITE_URL, TMP_DIR, SQLITE_DB_PATH
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -16,43 +18,40 @@ logger = logging.getLogger(__name__)
 # Get database URL from environment variable
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/research_assistant")
 
-# SQLite fallback URL
-SQLITE_URL = "sqlite+aiosqlite:///./research_assistant.db"
+# Create tmp directory if it doesn't exist
+os.makedirs(TMP_DIR, exist_ok=True)
 
 engine = None
 
 # Create async engine with graceful fallback
 async def setup_db_engine():
     """
-    Set up the database engine with fallback to SQLite if PostgreSQL fails.
+    Set up the database engine with fallback to SQLite in tmp directory if PostgreSQL fails.
     """
     global engine
     try:
-        # First try the configured database
-        temp_engine = create_async_engine(
-            DATABASE_URL,
-            echo=True,  # Set to False in production
-            future=True
-        )
+        # Get available database URL (PostgreSQL or SQLite fallback)
+        db_url = await get_available_database_url(DATABASE_URL)
         
-        # Test connection
-        async with temp_engine.begin() as conn:
-            # Just connect to verify the connection works
-            pass
-        
-        engine = temp_engine
-        logger.info(f"Successfully connected to database: {DATABASE_URL}")
+        # Create engine based on available database
+        if "sqlite" in db_url:
+            engine = create_async_engine(
+                db_url,
+                echo=True,  # Set to False in production
+                future=True,
+                connect_args={"check_same_thread": False}
+            )
+            logger.info(f"Using SQLite fallback database at {SQLITE_DB_PATH}")
+        else:
+            engine = create_async_engine(
+                db_url,
+                echo=True,  # Set to False in production
+                future=True
+            )
+            logger.info(f"Using PostgreSQL database at {db_url}")
     except Exception as e:
-        logger.warning(f"Failed to connect to primary database: {str(e)}")
-        logger.info(f"Falling back to SQLite database at {SQLITE_URL}")
-        
-        # Fall back to SQLite
-        engine = create_async_engine(
-            SQLITE_URL,
-            echo=True,  # Set to False in production
-            future=True,
-            connect_args={"check_same_thread": False}
-        )
+        logger.error(f"Failed to set up database engine: {str(e)}")
+        raise
 
 # Create declarative base
 Base = declarative_base()

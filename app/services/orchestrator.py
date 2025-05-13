@@ -522,7 +522,16 @@ class AgentOrchestrator:
         
         operations = []
         for task in plan:
-            operations.append(f"{task.get('agent', 'unknown')}: {task.get('task', '')[:50]}...")
+            agent_name = task.get('agent', 'unknown')
+            task_desc = task.get('task', '')[:50]
+            operations.append(f"{agent_name}: {task_desc}...")
+            
+            # Add each agent to the detailed status for better frontend display
+            self._update_status(f"agent_{agent_name}", details={
+                "status": "pending",
+                "task": task.get('task', ''),
+                "operations": [f"{task.get('operation', 'unknown')}: {task_desc}..."]
+            })
         
         self._update_status("executing", details={
             "message": f"Executing {len(operations)} search operations",
@@ -626,6 +635,18 @@ class AgentOrchestrator:
                             "message": f"Completed {agent_name} task"
                         }
                     })
+                    
+                    # Also update the agent status for the frontend display
+                    agent_status = self.processing_status.get("detailed_status", {}).get(f"agent_{agent_name}", {})
+                    if agent_status:
+                        # Update operations to include results if appropriate
+                        if "results" in result:
+                            agent_status["results"] = result.get("results", [])
+                        if "papers" in result:
+                            agent_status["sources"] = result.get("papers", [])
+                        
+                        agent_status["status"] = "completed"
+                        self._update_status(f"agent_{agent_name}", details=agent_status)
                 except Exception as e:
                     logger.error(f"Error executing task {task_id}: {str(e)}")
                     task_results[task_id] = {"error": str(e)}

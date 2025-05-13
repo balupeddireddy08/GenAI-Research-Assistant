@@ -46,18 +46,23 @@ export const sendChatMessage = async (message, conversationId = null, metadata =
  * @param {number} limit - Maximum number of conversations to return
  * @returns {Promise<Array>} - List of conversation objects
  */
-export const getConversationHistory = async (skip = 0, limit = 20) => {
+export const getConversationHistory = async () => {
   try {
-    const response = await fetch(`${API_BASE_URL}/history/?skip=${skip}&limit=${limit}`);
+    const response = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:8000/api'}/history?timestamp=${Date.now()}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache, no-store, must-revalidate'
+      },
+    });
     
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || 'Failed to fetch conversation history');
+      throw new Error('Failed to fetch conversation history');
     }
-
+    
     return await response.json();
   } catch (error) {
-    console.error('Error fetching conversation history:', error);
+    console.error('Error getting conversation history:', error);
     throw error;
   }
 };
@@ -126,6 +131,27 @@ export const getRecommendations = async (conversationId) => {
     return await response.json();
   } catch (error) {
     console.error('Error fetching recommendations:', error);
+    throw error;
+  }
+};
+
+// Function to fix all conversation timestamps
+export const fixConversationTimestamps = async () => {
+  try {
+    const response = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:8000/api'}/history/fix-timestamps`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to fix conversation timestamps');
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Error fixing conversation timestamps:', error);
     throw error;
   }
 }; 
