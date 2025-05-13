@@ -80,6 +80,9 @@ jobs:
           # Modify the supervisord config for Hugging Face port
           RUN sed -i 's/--port 8000/--port 7860/g' /tmp/supervisor/supervisord.conf
 
+          # Copy app.py to root
+          COPY app.py .
+
           # Set environment variables
           ENV PYTHONPATH=/app
           ENV NODE_ENV=production
@@ -137,6 +140,16 @@ jobs:
           *Deployed via GitHub Actions to Hugging Face Spaces*
           EOL
       
+      - name: Create app.py for Hugging Face
+        run: |
+          # Create a simple app.py that imports the main app
+          cat > app.py << EOL
+          from app.main import app
+
+          # This file is required by Hugging Face Spaces
+          # The actual application is defined in app/main.py
+          EOL
+      
       - name: Push to Hugging Face Space
         env:
           HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
@@ -161,6 +174,7 @@ jobs:
           cp Dockerfile repo/
           cp README.md repo/
           cp -r docker/ repo/
+          cp app.py repo/
           
           # Create .gitattributes for LFS
           echo "*.bin filter=lfs diff=lfs merge=lfs -text" > repo/.gitattributes
