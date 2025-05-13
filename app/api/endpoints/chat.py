@@ -18,11 +18,10 @@ from app.schemas.conversation import ChatRequest, ChatResponse, ConversationCrea
 from app.schemas.message import MessageCreate, MessageResponse
 from app.services.chat_service import process_message
 from app.models.conversation import Conversation, Message
-from app.utils.llm_utils import get_llm_client, get_completion
+from app.utils.llm_utils import get_llm_client, get_completion, cleanup_llm_client
 from app.config import settings
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -169,6 +168,9 @@ async def enhance_prompt(
     Enhance a user's prompt to make it more effective for the research assistant.
     Takes the user's input and transforms it into a more effective research query.
     """
+    # Initialize the LLM client
+    client_tuple = None
+    
     try:
         logger.info(f"Enhancing prompt: {request.prompt[:50]}...")
         
@@ -247,3 +249,10 @@ async def enhance_prompt(
     except Exception as e:
         logger.error(f"Error enhancing prompt: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to enhance prompt: {str(e)}")
+    finally:
+        # Clean up the client in the finally block to ensure it happens
+        if client_tuple:
+            try:
+                await cleanup_llm_client(client_tuple)
+            except Exception as e:
+                logger.error(f"Error cleaning up LLM client: {str(e)}")

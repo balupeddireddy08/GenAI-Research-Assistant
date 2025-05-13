@@ -11,15 +11,10 @@ from contextlib import asynccontextmanager
 
 from app.api.endpoints import chat, history, recommendations
 from app.database import create_db_and_tables
+from app.utils.logging_config import configure_logging
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Set up logging using centralized configuration
+configure_logging(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager

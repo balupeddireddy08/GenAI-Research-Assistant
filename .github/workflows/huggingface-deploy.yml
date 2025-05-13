@@ -1,0 +1,88 @@
+name: GenAI Research Assistant CD to Hugging Face
+
+on:
+  workflow_run:
+    workflows: ["GenAI Research Assistant CI"]
+    branches: [main, master]
+    types:
+      - completed
+  # Optional: Enable manual deployment
+  workflow_dispatch:
+
+jobs:
+  deploy-to-huggingface:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Login to Hugging Face
+        run: |
+          pip install huggingface_hub
+          # Create HF credentials file directly
+          mkdir -p ~/.huggingface
+          echo "{ \"api_key\": \"${{ secrets.HF_TOKEN }}\" }" > ~/.huggingface/token
+      
+      - name: Clone Hugging Face Space
+        env:
+          HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
+        run: |
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          
+          # Clone the Hugging Face Space repo (or create it if it doesn't exist)
+          if ! git clone https://huggingface.co/spaces/$HF_USERNAME/$HF_SPACE_NAME repo; then
+            mkdir -p repo
+            cd repo
+            git init
+            git remote add origin https://huggingface.co/spaces/$HF_USERNAME/$HF_SPACE_NAME
+            cd ..
+          fi
+      
+      - name: Copy Docker Configuration Files
+        run: |
+          # Copy docker/huggingface-space.yaml as README.md
+          cp docker/huggingface-space.yaml repo/README.md
+          
+          # Create Dockerfile that pulls from DockerHub
+          cat > repo/Dockerfile << EOL
+          FROM ${{ secrets.DOCKERHUB_USERNAME }}/genai-research-assistant:latest
+          
+          # No changes needed - the base image already contains all necessary setup
+          # This is just a wrapper to pull from DockerHub
+          
+          # Expose the port Hugging Face will use
+          EXPOSE 7860
+          EOL
+      
+      - name: Push to Hugging Face Space
+        env:
+          HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
+        run: |
+          # Create Docker configuration for Hugging Face
+          mkdir -p repo/.docker
+          
+          # Create .gitattributes for LFS
+          echo "*.bin filter=lfs diff=lfs merge=lfs -text" > repo/.gitattributes
+          
+          # Commit and push changes
+          cd repo
+          git add .
+          git commit -m "Update Space with latest GenAI Research Assistant"
+          git push -f https://${{ secrets.HF_USERNAME }}:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/$HF_USERNAME/$HF_SPACE_NAME main
+      
+      - name: Wait for deployment and post status
+        env:
+          HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
+        run: |
+          echo "Deploying to Hugging Face Space: https://huggingface.co/spaces/$HF_USERNAME/$HF_SPACE_NAME"
+          echo "Deployment triggered! It may take a few minutes to complete."
+          echo "IMPORTANT: Remember to set the following environment variables in your Hugging Face Space settings:"
+          echo "- DATABASE_URL (if using external database)"
+          echo "- OPENAI_API_KEY"
+          echo "- GOOGLE_API_KEY"
+          echo "- META_API_KEY" 

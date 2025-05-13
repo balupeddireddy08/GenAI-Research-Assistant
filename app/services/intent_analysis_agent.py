@@ -23,7 +23,8 @@ class IntentAnalysisAgent:
     
     def __init__(self, settings):
         self.settings = settings
-        self.llm_client = get_llm_client(settings)
+        # Use secondary model for intent analysis as it's a simpler, classification task
+        self.llm_client = get_llm_client(settings, use_secondary=True)
     
     async def analyze_intent(
         self, 
@@ -107,7 +108,7 @@ class IntentAnalysisAgent:
         Perform a comprehensive analysis of user intent using LLM.
         This handles all types of queries including conversational, identity, and research.
         """
-        logger.info("Performing intent analysis with LLM...")
+        logger.info("Performing intent analysis with secondary LLM...")
         
         # Pre-check for educational explanation queries 
         explanation_patterns = [
@@ -180,7 +181,7 @@ class IntentAnalysisAgent:
         # Include recent conversation history for context
         recent_history = conversation_history[-5:] if len(conversation_history) > 0 else []
         
-        # Get the analysis from the LLM
+        # Get the analysis from the secondary LLM
         result = await get_completion(
             self.llm_client,
             messages=[
@@ -188,7 +189,8 @@ class IntentAnalysisAgent:
                 *recent_history,
                 {"role": "user", "content": user_message}
             ],
-            response_format={"type": "json_object"} if self.settings.PRIMARY_LLM in self.settings.OPENAI_MODELS else None
+            response_format={"type": "json_object"} if self.settings.SECONDARY_LLM in self.settings.OPENAI_MODELS else None,
+            use_secondary=True
         )
         
         try:
@@ -203,99 +205,46 @@ class IntentAnalysisAgent:
                     result = json_content.group(1).strip()
             
             # Parse the JSON result
-            intent = json.loads(result)
+            intent_data = json.loads(result)
             
-            # Special case for explanation intents
-            if intent.get("primary_intent", "").lower() in ["explanation", "explain"] or "explain" in user_message.lower():
-                # Extract potential concept being explained
-                concept = None
-                if ":" in user_message:
-                    concept = user_message.split(":", 1)[1].strip()
-                elif "explain" in user_message.lower():
-                    parts = user_message.lower().split("explain", 1)
-                    if len(parts) > 1:
-                        concept = parts[1].strip()
+            # Ensure required fields are present
+            if "primary_intent" not in intent_data:
+                intent_data["primary_intent"] = "unknown"
                 
-                if concept:
-                    intent["entities"] = intent.get("entities", []) 
-                    if concept not in intent["entities"]:
-                        intent["entities"].append(concept)
-                    intent["concept_to_explain"] = concept
+            if "is_conversational" not in intent_data:
+                # Determine based on primary intent
+                conversational_intents = ["greeting", "chitchat", "conversational", "personal"]
+                intent_data["is_conversational"] = intent_data["primary_intent"].lower() in conversational_intents
                 
-                # Force explanation intents to use research handler
-                intent["is_conversational"] = False
-                intent["requires_search"] = True
-                intent["requires_planning"] = True
-                intent["handler"] = "research_handler"
+            if "requires_search" not in intent_data:
+                # Default based on conversational status
+                intent_data["requires_search"] = not intent_data["is_conversational"]
                 
-                logger.info(f"Detected explanation intent for concept: {concept}")
-                return intent
+            if "requires_planning" not in intent_data:
+                # Default based on whether search is required
+                intent_data["requires_planning"] = intent_data["requires_search"]
+                
+            if "handler" not in intent_data:
+                # Determine handler
+                if intent_data["is_conversational"]:
+                    intent_data["handler"] = "conversation_handler"
+                elif intent_data["primary_intent"].lower() in ["identity", "capabilities"]:
+                    intent_data["handler"] = "identity_handler"
+                else:
+                    intent_data["handler"] = "research_handler"
             
-            # Apply default values for any missing fields
-            defaults = {
-                "requires_search": False if intent.get("is_conversational", False) else True,
-                "requires_planning": False if intent.get("is_conversational", False) else True,
-                "handler": "conversation_handler" if intent.get("is_conversational", True) else "research_handler"
-            }
+            logger.info(f"Intent analysis complete. Primary intent: {intent_data['primary_intent']}, Handler: {intent_data['handler']}")
+            return intent_data
             
-            # Only set defaults if the fields are missing
-            for key, default_value in defaults.items():
-                if key not in intent:
-                    intent[key] = default_value
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Error parsing intent analysis JSON: {str(e)}. Raw result: {result}")
             
-            # Special case for identity questions
-            if intent.get("primary_intent", "").lower() in ["identity", "assistant_identity"]:
-                intent["handler"] = "identity_handler"
-                intent["is_conversational"] = True
-                intent["requires_search"] = False
-                intent["requires_planning"] = False
-            
-            return intent
-            
-        except json.JSONDecodeError as e:
-            # Fallback in case of parsing errors
-            logger.warning(f"Failed to parse LLM response in intent analysis: {str(e)}. Using fallback")
-            logger.debug(f"Raw LLM response: {result}")
-            
-            # More intelligent fallback based on message characteristics
-            message = user_message.lower()
-            
-            # Check for common conversational patterns
-            is_greeting = any(x in message for x in ["hi", "hello", "hey", "greetings", "howdy", "what's up", "whats up", "how are you"])
-            is_short = len(message.split()) <= 5
-            has_question_words = any(x in message for x in ["what", "who", "where", "when", "why", "how"])
-            
-            # Classify based on message characteristics
-            if is_greeting or (is_short and not has_question_words):
-                # Likely a greeting or simple conversational message
-                return {
-                    "primary_intent": "greeting",
-                    "entities": [],
-                    "query_type": "conversational",
-                    "is_conversational": True,
-                    "requires_search": False,
-                    "requires_planning": False,
-                    "handler": "conversation_handler"
-                }
-            elif "you" in message and is_short:
-                # Likely asking about the assistant
-                return {
-                    "primary_intent": "assistant_identity",
-                    "entities": ["assistant"],
-                    "query_type": "identity",
-                    "is_conversational": True,
-                    "requires_search": False,
-                    "requires_planning": False,
-                    "handler": "identity_handler"
-                }
-            else:
-                # Default to general query
-                return {
-                    "primary_intent": "general_query",
-                    "entities": [],
-                    "query_type": "unknown",
-                    "is_conversational": False,
-                    "requires_search": True,
-                    "requires_planning": False,
-                    "handler": "research_handler"
-                } 
+            # Return a fallback intent analysis
+            return {
+                "primary_intent": "research",
+                "is_conversational": False,
+                "requires_search": True,
+                "requires_planning": True,
+                "handler": "research_handler",
+                "error": f"Failed to parse intent: {str(e)}"
+            } 

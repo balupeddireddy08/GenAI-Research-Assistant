@@ -39,8 +39,9 @@ class AgentOrchestrator:
         }
         
         try:
-            # Core LLM client
-            self.llm_client = get_llm_client(settings)
+            # Core LLM clients - primary for complex tasks, secondary for simpler steps
+            self.primary_llm_client = get_llm_client(settings, use_secondary=False)
+            self.secondary_llm_client = get_llm_client(settings, use_secondary=True)
             
             # Initialize specialized agents
             self.search_agent = SearchAgent(settings)
@@ -56,7 +57,8 @@ class AgentOrchestrator:
         except Exception as e:
             logger.error(f"Error initializing orchestrator: {str(e)}")
             # Still initialize, but we'll handle errors in the process method
-            self.llm_client = None
+            self.primary_llm_client = None
+            self.secondary_llm_client = None
             self.search_agent = None
             self.academic_agent = None
             self.synthesis_agent = None
@@ -94,14 +96,15 @@ class AgentOrchestrator:
         
         # Initialize default metadata
         metadata = {
-            "model_used": self.settings.PRIMARY_LLM,
+            "primary_model": self.settings.PRIMARY_LLM,
+            "secondary_model": self.settings.SECONDARY_LLM,
             "success": True,
             "error": None,
             "processing_status": self.processing_status
         }
         
         # Handle initialization errors
-        if self.llm_client is None:
+        if self.primary_llm_client is None or self.secondary_llm_client is None:
             error_msg = "System initialization failed. Please check your API keys and configuration."
             metadata["success"] = False
             metadata["error"] = error_msg
@@ -109,7 +112,7 @@ class AgentOrchestrator:
             return error_msg, metadata
         
         try:
-            # Step 1: Intent Analysis - Delegate to the IntentAnalysisAgent
+            # Step 1: Intent Analysis - Use secondary model for intent analysis
             self._update_status("analyzing_intent", details={"message": "Analyzing your query to understand the intent..."})
             intent_analysis = await self.intent_analysis_agent.analyze_intent(user_message, conversation_history)
             
@@ -181,7 +184,7 @@ class AgentOrchestrator:
                 is_complex_task = self._is_complex_research_task(user_message, intent_analysis)
             
             if is_complex_task and self.task_decomposer:
-                # For complex tasks, use the task decomposer
+                # For complex tasks, use the task decomposer with primary model
                 self._update_status("decomposing_task", details={"message": "Breaking down your complex research query..."})
                 decomposed_tasks = await self.task_decomposer.decompose(user_message)
                 
@@ -198,47 +201,58 @@ class AgentOrchestrator:
             # Store plan in metadata
             metadata["execution_plan"] = plan
             
-            # Step 4: Execute the plan using specialized agents
-            self._update_status("executing_plan", details={"message": "Executing search and retrieval operations...", "plan": plan})
-            results = await self._execute_plan(plan, user_message, intent_analysis)
+            # Step 4: Execute the plan
+            self._update_status("executing_plan", details={"message": "Executing research plan..."})
+            execution_results = await self._execute_plan(plan, user_message, intent_analysis)
             
-            # Step 5: Synthesize the final response
-            self._update_status("synthesizing_response", details={"message": "Creating your comprehensive answer..."})
+            # Store execution results in metadata
+            metadata["execution_results"] = execution_results
+            
+            # Step 5: Synthesize the final response from all results
+            self._update_status("synthesizing_response", details={"message": "Synthesizing final response..."})
             response_content, synthesis_metadata = await self._synthesize_response(
-                user_message, 
-                results, 
+                user_message,
+                execution_results,
                 conversation_history
             )
             
-            # Mark completion
-            self._update_status("completed", details={"message": "Response completed", "time_taken": time.time() - self.processing_status["start_time"]})
-            
-            # Update metadata with synthesis results
+            # Merge synthesis metadata with main metadata
             metadata.update(synthesis_metadata)
-            metadata["handler_used"] = "research_handler"
             
-            # Check if response indicates an error
-            if response_content.startswith("Error:"):
-                metadata["success"] = False
-                metadata["error"] = response_content
-                self._update_status("error", details={"error": response_content})
+            # Generate recommendations based on the query and results
+            self._update_status("generating_recommendations", details={"message": "Generating follow-up recommendations..."})
+            recommendations = await self._generate_recommendations(user_message, execution_results)
             
-            # Make sure the final processing status is included
+            # Add recommendations to metadata
+            metadata["recommendations"] = recommendations
+            
+            # Mark completion
+            self._update_status("completed", details={
+                "message": "Research completed successfully", 
+                "time_taken": time.time() - self.processing_status["start_time"]
+            })
+            
+            # Update final processing status
             metadata["processing_status"] = self.processing_status
             
             return response_content, metadata
             
         except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Error in orchestrator process: {error_msg}")
+            error_msg = f"Error processing message: {str(e)}"
+            logger.error(error_msg)
             
-            # Create error response
+            # Update metadata with error information
             metadata["success"] = False
             metadata["error"] = error_msg
+            
+            # Update status
             self._update_status("error", details={"error": error_msg})
             metadata["processing_status"] = self.processing_status
             
-            return f"I encountered an error while processing your request: {error_msg}", metadata
+            # Fallback response using the primary model
+            fallback_response = await self._generate_fallback_response(user_message, conversation_history, error_msg)
+            
+            return fallback_response, metadata
     
     def _is_complex_research_task(self, user_message: str, intent_analysis: Dict[str, Any]) -> bool:
         """Determine if a user query is a complex research task that needs decomposition"""
@@ -336,51 +350,75 @@ class AgentOrchestrator:
         intent_analysis: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        Generate a simple execution plan for queries that don't need detailed planning.
+        Generate a simple execution plan for the user query.
+        Uses the secondary model for this simpler task.
+        
+        Args:
+            user_message: The user's message
+            intent_analysis: Results of intent analysis
+            
+        Returns:
+            List of plan steps
         """
-        # Check if query needs academic sources
-        info_sources = intent_analysis.get("required_information_sources", [])
-        query_type = intent_analysis.get("query_type", "")
-        
-        # Convert string to list if needed
-        if isinstance(info_sources, str):
-            info_sources = [source.strip() for source in info_sources.split(",")]
-        
-        needs_academic = any(term in str(info_sources).lower() for term in ["academic", "papers", "research"]) or \
-                         any(term in query_type.lower() for term in ["research", "academic"])
-        
-        plan = []
-        
-        # Add academic search if needed
-        if needs_academic:
-            plan.append({
-                "agent": "academic_agent",
-                "task": f"Search for academic papers about: {user_message}",
-                "priority": "high",
-                "operation": "search_papers",
-                "task_id": "academic_search"
-            })
-        
-        # Always include web search for general information
-        plan.append({
-            "agent": "search_agent",
-            "task": f"Search for information about: {user_message}",
-            "priority": "high" if not needs_academic else "medium",
-            "operation": "search_web",
-            "task_id": "web_search"
-        })
-        
-        # Always include synthesis step
-        plan.append({
-            "agent": "synthesis_agent",
-            "task": "Synthesize the results into a comprehensive response",
-            "priority": "high",
-            "operation": "synthesize_response",
-            "task_id": "synthesis",
-            "dependencies": ["academic_search", "web_search"] if needs_academic else ["web_search"]
-        })
-        
-        return plan
+        try:
+            # For simple plans, use the secondary model
+            prompt = f"""
+            You are a research planning assistant. Generate a simple execution plan for the following query.
+            The plan should be a JSON list of steps, where each step has:
+            - "step_id": a unique identifier (integer)
+            - "task": a short description of what needs to be done
+            - "agent": which agent should handle it ("search", "academic", "synthesis")
+            - "dependencies": list of step_ids this step depends on (can be empty)
+            
+            User Query: {user_message}
+            
+            Intent Analysis: {json.dumps(intent_analysis)}
+            
+            Response format example:
+            [
+                {{"step_id": 1, "task": "Search for recent papers on X", "agent": "search", "dependencies": []}},
+                {{"step_id": 2, "task": "Analyze key findings from papers", "agent": "academic", "dependencies": [1]}},
+                {{"step_id": 3, "task": "Synthesize comprehensive answer", "agent": "synthesis", "dependencies": [2]}}
+            ]
+            """
+            
+            # Use secondary model for plan generation
+            response = await get_completion(
+                self.secondary_llm_client,
+                messages=[
+                    {"role": "system", "content": "You are a helpful research planning assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"},
+                use_secondary=True
+            )
+            
+            # Parse the JSON response
+            try:
+                plan = json.loads(response)
+                # Ensure we have a list
+                if not isinstance(plan, list):
+                    if isinstance(plan, dict) and "plan" in plan:
+                        plan = plan["plan"]
+                    else:
+                        plan = []
+                        
+                return plan
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse plan JSON, using fallback plan: {response}")
+                # Return a fallback plan
+                return [
+                    {"step_id": 1, "task": "Search for information", "agent": "search", "dependencies": []},
+                    {"step_id": 2, "task": "Synthesize answer", "agent": "synthesis", "dependencies": [1]}
+                ]
+                
+        except Exception as e:
+            logger.error(f"Error generating simple plan: {str(e)}")
+            # Return a minimal fallback plan
+            return [
+                {"step_id": 1, "task": "Search for information", "agent": "search", "dependencies": []},
+                {"step_id": 2, "task": "Synthesize answer", "agent": "synthesis", "dependencies": [1]}
+            ]
     
     async def _generate_plan_with_reasoning(
         self, 
@@ -388,99 +426,95 @@ class AgentOrchestrator:
         intent_analysis: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        Generate a plan with explicit reasoning steps for handling complex queries.
+        Generate an execution plan with explicit reasoning.
+        Uses the primary model for this complex task.
         
-        This function enhances the planning process by adding explicit reasoning,
-        allowing for more adaptive plan generation based on the user's query.
+        Args:
+            user_message: The user's message
+            intent_analysis: Results of intent analysis
+            
+        Returns:
+            List of plan steps
         """
-        self._update_status("reasoning", details={"message": "Reasoning about the best approach to answer your query..."})
-        
-        # Create a more sophisticated prompt that emphasizes reasoning
-        prompt = f"""
-        You are a research planning expert for a GenAI Research Assistant that coordinates multiple agents.
-        
-        TASK: Create a detailed plan to answer the user's query by coordinating specialized agents.
-        
-        USER QUERY: {user_message}
-        
-        INTENT ANALYSIS: {json.dumps(intent_analysis, indent=2)}
-        
-        AVAILABLE AGENTS:
-        - academic_agent: For searching academic databases like ArXiv
-          Operations: search_papers, get_paper_details
-          Best for: Finding research papers, academic information
-          
-        - search_agent: For web searches and general information
-          Operations: search_web, search_news
-          Best for: Recent information, general knowledge
-          
-        - comparison_agent: For comparing papers or explaining concepts
-          Operations: compare_papers, explain_concept, compare_research_methods
-          Best for: Analyzing differences/similarities, explaining complex topics
-          
-        - synthesis_agent: For combining information and generating final responses
-          Operations: synthesize_response
-          Best for: Creating comprehensive answers from multiple sources
-        
-        PLAN CREATION INSTRUCTIONS:
-        1. Start with a short REASONING paragraph explaining why you're selecting certain steps
-        2. Consider what types of information are needed to fully answer the query
-        3. Include dependencies between steps where appropriate
-        4. For research questions, ALWAYS prefer academic_agent over search_agent
-        5. Always include a final synthesis step that depends on previous steps
-        
-        IMPORTANT: You MUST return a JSON object with EXACTLY this structure:
-        {{
-          "reasoning": "Your reasoning about how to answer this query",
-          "plan": [
-            {{
-              "agent": "agent_name",
-              "task": "specific task description",
-              "operation": "operation_name",
-              "priority": 1,
-              "task_id": "unique_id",
-              "dependencies": []
-            }},
-            // additional steps...
-          ]
-        }}
-        
-        The "priority" should be a number (1 for highest priority). Ensure the JSON is valid with no trailing commas.
-        """
-        
-        # Get the plan with reasoning from the LLM
-        result = await get_completion(
-            self.llm_client,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_message}
-            ],
-            response_format={"type": "json_object"} if self.settings.PRIMARY_LLM in self.settings.OPENAI_MODELS else None
-        )
-        
         try:
-            # Parse the JSON result
-            plan_data = json.loads(result)
+            prompt = f"""
+            You are a meticulous research planning assistant. Given a user query, generate a detailed execution plan.
             
-            # Extract the plan steps and reasoning
-            plan = plan_data.get("plan", [])
-            reasoning = plan_data.get("reasoning", "")
+            First, analyze the query and explain your reasoning about:
+            1. What information needs to be gathered
+            2. What analysis needs to be performed
+            3. How the results should be synthesized
             
-            # Log the reasoning
-            logger.info(f"Plan reasoning: {reasoning[:100]}...")
+            Then, generate a JSON execution plan with these steps:
+            - "step_id": A unique identifier (integer)
+            - "task": A clear description of what needs to be done 
+            - "agent": Which agent should handle it (search, academic, synthesis, or comparison)
+            - "dependencies": List of step_ids this step depends on
+            - "reasoning": Why this step is necessary
             
-            # Store reasoning in status
-            self._update_status("plan_generated", details={
-                "message": f"Research plan created with {len(plan)} steps",
-                "reasoning": reasoning,
-                "plan": plan
-            })
+            User Query: {user_message}
             
-            return plan
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Failed to parse LLM response for plan generation, using fallback plan")
+            Intent Analysis: {json.dumps(intent_analysis)}
+            """
             
-            # Create a fallback plan
+            # Use primary model for complex reasoning task
+            response = await get_completion(
+                self.primary_llm_client,
+                messages=[
+                    {"role": "system", "content": "You are a helpful research planning assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                use_secondary=False
+            )
+            
+            # Extract the JSON plan from the response
+            # Find JSON part in the response (between ```json and ```)
+            import re
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
+            
+            if json_match:
+                plan_json = json_match.group(1).strip()
+            else:
+                # Try to find an array in the text
+                array_match = re.search(r'\[\s*\{.*\}\s*\]', response, re.DOTALL)
+                if array_match:
+                    plan_json = array_match.group(0)
+                else:
+                    # Use regex to find all JSON-like objects and try to construct a plan
+                    object_matches = re.findall(r'\{\s*"step_id"\s*:.*?\}', response, re.DOTALL)
+                    if object_matches:
+                        plan_json = "[" + ",".join(object_matches) + "]"
+                    else:
+                        # No JSON found, use simple plan generation
+                        logger.warning("No JSON plan found in response, falling back to simple plan")
+                        return await self._generate_simple_plan(user_message, intent_analysis)
+            
+            # Parse the JSON
+            try:
+                plan = json.loads(plan_json)
+                # Ensure we have a list
+                if not isinstance(plan, list):
+                    if isinstance(plan, dict) and "plan" in plan:
+                        plan = plan["plan"]
+                    else:
+                        plan = []
+                        
+                # Ensure each step has the required fields
+                for step in plan:
+                    if "dependencies" not in step:
+                        step["dependencies"] = []
+                    if "reasoning" not in step:
+                        step["reasoning"] = "Supporting the research process"
+                        
+                return plan
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse complex plan JSON: {plan_json}")
+                # Fall back to simple plan generation
+                return await self._generate_simple_plan(user_message, intent_analysis)
+                
+        except Exception as e:
+            logger.error(f"Error generating plan with reasoning: {str(e)}")
+            # Fall back to simple plan
             return await self._generate_simple_plan(user_message, intent_analysis)
     
     async def _execute_plan(
@@ -862,7 +896,7 @@ class AgentOrchestrator:
         for attempt in range(max_attempts):
             try:
                 result = await get_completion(
-                    self.llm_client,
+                    self.primary_llm_client,
                     messages=[
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": f"{user_message}\n\nContext:\n{context}"}

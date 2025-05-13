@@ -9,3 +9,4 @@ aiohttp
 python-dotenv
 google-generativeai>=0.3.0
 aiosqlite
+llama-api-client

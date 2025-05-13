@@ -20,9 +20,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from app.database import Base
 from app.models.conversation import Conversation, Message
 from app.models.user import User
+from app.utils.logging_config import configure_logging
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+configure_logging(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Create a local tmp directory in the project root instead of using system temp folder

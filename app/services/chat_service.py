@@ -15,7 +15,7 @@ import asyncio
 from app.models.conversation import Message, Conversation
 from app.config import settings
 from app.services.orchestrator import AgentOrchestrator
-from app.utils.llm_utils import get_llm_client, get_completion
+from app.utils.llm_utils import get_llm_client, get_completion, cleanup_llm_client
 from app.services.recommendations import get_recommendations_for_conversation
 from app.database import get_async_session
 
@@ -32,6 +32,9 @@ async def generate_conversation_title(conversation_messages: List[Any]) -> str:
     Returns:
         A concise title string for the conversation
     """
+    # Initialize LLM client
+    llm_client = None
+    
     try:
         # Initialize LLM client
         llm_client = get_llm_client(settings)
@@ -89,6 +92,13 @@ async def generate_conversation_title(conversation_messages: List[Any]) -> str:
     except Exception as e:
         logger.warning(f"Error generating conversation title: {str(e)}")
         return "Research Conversation"
+    finally:
+        # Clean up the client
+        if llm_client:
+            try:
+                await cleanup_llm_client(llm_client)
+            except Exception as e:
+                logger.error(f"Error cleaning up LLM client: {str(e)}")
 
 async def generate_conversation_summary(conversation_messages: List[Any]) -> str:
     """
@@ -100,6 +110,9 @@ async def generate_conversation_summary(conversation_messages: List[Any]) -> str
     Returns:
         A string summary of the conversation
     """
+    # Initialize LLM client
+    llm_client = None
+    
     try:
         # Initialize LLM client
         llm_client = get_llm_client(settings)
@@ -144,6 +157,13 @@ async def generate_conversation_summary(conversation_messages: List[Any]) -> str
     except Exception as e:
         logger.warning(f"Error generating conversation summary: {str(e)}")
         return "Conversation about various research topics."
+    finally:
+        # Clean up the client
+        if llm_client:
+            try:
+                await cleanup_llm_client(llm_client)
+            except Exception as e:
+                logger.error(f"Error cleaning up LLM client: {str(e)}")
 
 async def process_message(
     conversation_id: str,
@@ -257,6 +277,9 @@ async def update_conversation_info(
     # Create a new database session for this background task
     async_session = await get_async_session()
     
+    # Initialize LLM client
+    llm_client = None
+    
     async with async_session() as db:
         try:
             # Only generate summaries when there are enough messages
@@ -324,4 +347,12 @@ async def update_conversation_info(
         except Exception as e:
             logger.error(f"Error updating conversation info: {str(e)}", exc_info=True)
             await db.rollback()
-            # Don't propagate the exception since this runs in the background 
+            # Don't propagate the exception since this runs in the background
+        finally:
+            # Clean up the client
+            if llm_client:
+                try:
+                    await cleanup_llm_client(llm_client)
+                except Exception as e:
+                    logger.error(f"Error cleaning up LLM client in update_conversation_info: {str(e)}")
+            # Close the database session (handled by the context manager) 

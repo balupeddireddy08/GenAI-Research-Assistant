@@ -12,7 +12,6 @@ from typing import AsyncGenerator
 from app.utils.db_fallback import get_available_database_url, SQLITE_URL, TMP_DIR, SQLITE_DB_PATH
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Get database URL from environment variable
