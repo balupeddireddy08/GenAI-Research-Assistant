@@ -24,7 +24,120 @@ jobs:
           mkdir -p ~/.huggingface
           echo "{ \"api_key\": \"${{ secrets.HF_TOKEN }}\" }" > ~/.huggingface/token
       
-      - name: Clone Hugging Face Space
+      - name: Create Dockerfile for Hugging Face
+        run: |
+          cat > Dockerfile << EOL
+          FROM python:3.11-slim
+
+          WORKDIR /app
+
+          # Install Node.js, npm, and other system dependencies
+          RUN apt-get update && apt-get install -y \\
+              nodejs \\
+              npm \\
+              supervisor \\
+              curl \\
+              build-essential \\
+              git \\
+              && rm -rf /var/lib/apt/lists/*
+
+          # Copy requirements first for better caching
+          COPY requirements.txt .
+          RUN pip install --no-cache-dir -r requirements.txt
+
+          # Copy backend application
+          COPY app/ ./app/
+          
+          # Set up frontend
+          WORKDIR /app/frontend
+          COPY frontend/package*.json ./
+          RUN npm install
+          COPY frontend/ ./
+          
+          # Set Node.js OpenSSL legacy provider for compatibility
+          ENV NODE_OPTIONS=--openssl-legacy-provider
+          
+          # Build frontend
+          RUN npm run build
+          
+          # Return to app directory
+          WORKDIR /app
+          
+          # Install serve for frontend
+          RUN npm install -g serve
+          
+          # Create directory for persistent storage
+          RUN mkdir -p /app/tmp
+          
+          # Create a non-root user to run the app
+          RUN useradd -m appuser && \\
+              mkdir -p /tmp/supervisor && \\
+              chown -R appuser:appuser /app /tmp/supervisor
+
+          # Copy supervisor configuration
+          COPY docker/supervisord.conf /tmp/supervisor/supervisord.conf
+          
+          # Modify the supervisord config for Hugging Face port
+          RUN sed -i 's/--port 8000/--port 7860/g' /tmp/supervisor/supervisord.conf
+
+          # Set environment variables
+          ENV PYTHONPATH=/app
+          ENV NODE_ENV=production
+          ENV PORT=7860
+
+          # Switch to non-root user
+          USER appuser
+
+          # Expose the port Hugging Face will use
+          EXPOSE 7860
+
+          # Run the app with supervisord
+          CMD ["/usr/bin/supervisord", "-c", "/tmp/supervisor/supervisord.conf"]
+          EOL
+      
+      - name: Create Hugging Face Space README
+        run: |
+          cat > README.md << EOL
+          ---
+          title: GenAI Research Assistant
+          emoji: 🔎
+          colorFrom: indigo
+          colorTo: purple
+          sdk: docker
+          app_port: 7860
+          pinned: true
+          license: mit
+          ---
+
+          # GenAI Research Assistant
+
+          A powerful AI-powered research assistant that helps you search, analyze, and synthesize information from various sources.
+
+          ## Features
+
+          - Multi-model LLM support (OpenAI, Google, Meta)
+          - Document-based question answering
+          - Chat memory and conversation history
+          - Modern React frontend with responsive design
+
+          ## Environment Setup
+
+          To use this application, set the following environment variables in your Hugging Face Space settings:
+
+          - \`OPENAI_API_KEY\`: Your OpenAI API key
+          - \`GOOGLE_API_KEY\`: Your Google AI Studio API key
+          - \`META_API_KEY\`: Your Meta API key
+          - \`DATABASE_URL\`: (Optional) Database connection string
+
+          ## Learn More
+
+          [Visit GitHub Repository](https://github.com/yourusername/genai-research-assistant)
+
+          ---
+          *Deployed via GitHub Actions to Hugging Face Spaces*
+          EOL
+      
+      - name: Push to Hugging Face Space
         env:
           HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
           HF_USERNAME: ${{ secrets.HF_USERNAME }}
@@ -40,81 +153,25 @@ jobs:
             git remote add origin https://huggingface.co/spaces/$HF_USERNAME/$HF_SPACE_NAME
             cd ..
           fi
-      
-      - name: Create HF Space Configuration Files
-        run: |
-          # Copy docker/huggingface-space.yaml as README.md
-          cp docker/huggingface-space.yaml repo/README.md
           
-          # Create custom entrypoint script for Hugging Face Spaces
-          cat > repo/hf-entrypoint.sh << EOL
-          #!/bin/bash
-          set -e
-
-          # Create supervisord configuration in a writable directory
-          mkdir -p /tmp/supervisor
-          
-          # Create a modified supervisord.conf for HF Spaces
-          cat > /tmp/supervisor/supervisord.conf << EOSUPERVISOR
-          [supervisord]
-          nodaemon=true
-          logfile=/tmp/supervisord.log
-          logfile_maxbytes=50MB
-          loglevel=info
-
-          [program:backend]
-          command=uvicorn app.main:app --host 0.0.0.0 --port 7860
-          directory=/app
-          autostart=true
-          autorestart=true
-          stdout_logfile=/dev/stdout
-          stdout_logfile_maxbytes=0
-          stderr_logfile=/dev/stderr
-          stderr_logfile_maxbytes=0
-          environment=PYTHONUNBUFFERED=1
-
-          [program:frontend]
-          command=serve -s frontend/build -l 3000
-          directory=/app
-          autostart=true
-          autorestart=true
-          stdout_logfile=/dev/stdout
-          stdout_logfile_maxbytes=0
-          stderr_logfile=/dev/stderr
-          stderr_logfile_maxbytes=0
-          EOSUPERVISOR
-          
-          echo "Starting supervisord with configuration in /tmp/supervisor"
-          exec /usr/bin/supervisord -c /tmp/supervisor/supervisord.conf
-          EOL
-          
-          # Make the entrypoint script executable
-          chmod +x repo/hf-entrypoint.sh
-          
-          # Create Dockerfile that pulls from DockerHub and uses our custom entrypoint
-          cat > repo/Dockerfile << EOL
-          FROM ${{ secrets.DOCKERHUB_USERNAME }}/genai-research-assistant:latest
-          
-          # Copy the HF-specific entrypoint script
-          COPY hf-entrypoint.sh /hf-entrypoint.sh
-          
-          # Expose the port Hugging Face will use
-          EXPOSE 7860
-          
-          # Use our HF-specific entrypoint
-          ENTRYPOINT ["/hf-entrypoint.sh"]
-          EOL
-      
-      - name: Push to Hugging Face Space
-        env:
-          HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
-          HF_USERNAME: ${{ secrets.HF_USERNAME }}
-        run: |
-          # Create Docker configuration for Hugging Face
-          mkdir -p repo/.docker
+          # Copy necessary files
+          cp -r app/ repo/
+          cp -r frontend/ repo/
+          cp requirements.txt repo/
+          cp Dockerfile repo/
+          cp README.md repo/
+          cp -r docker/ repo/
           
           # Create .gitattributes for LFS
           echo "*.bin filter=lfs diff=lfs merge=lfs -text" > repo/.gitattributes
+          
+          # Create Docker configuration for Hugging Face
+          mkdir -p repo/.config/huggingface
+          cat > repo/.config/huggingface/settings.json << EOL
+          {
+            "docker_enabled": true
+          }
+          EOL
           
           # Commit and push changes
           cd repo
