@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Get database URL from environment variable
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5432/research_assistant")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/research_assistant")
 
 # SQLite fallback URL
 SQLITE_URL = "sqlite+aiosqlite:///./research_assistant.db"
